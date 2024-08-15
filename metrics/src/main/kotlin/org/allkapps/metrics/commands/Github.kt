@@ -23,7 +23,6 @@ private const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 
 class Github : CliktCommand() {
     override fun run() {
-        println(currentContext.invokedSubcommand?.commandName)
         if (!Settings().hasKey(KEY_GITHUB_DEFAULT) && currentContext.invokedSubcommand?.commandName != "config") {
             throw UsageError("Run the config command before trying to execute any other commands")
         }
