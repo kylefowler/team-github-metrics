@@ -16,7 +16,7 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import org.allkapps.metrics.Github
+import org.allkapps.metrics.commands.Github
 import kotlinx.coroutines.*
 
 fun createGitHubClient(): HttpClient {
