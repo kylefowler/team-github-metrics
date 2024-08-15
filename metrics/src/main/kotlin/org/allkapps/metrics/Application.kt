@@ -3,6 +3,7 @@ package org.allkapps.metrics
 import com.github.ajalt.clikt.core.*
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
+import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.mordant.rendering.TextColors
@@ -22,12 +23,13 @@ class Metrics : NoOpCliktCommand() {
 
 class Github : CliktCommand() {
     override fun run() {
-        if (!Settings().hasKey(KEY_GITHUB_DEFAULT)) {
+        println(currentContext.invokedSubcommand?.commandName)
+        if (!Settings().hasKey(KEY_GITHUB_DEFAULT) && currentContext.invokedSubcommand?.commandName != "config") {
             throw UsageError("Run the config command before trying to execute any other commands")
         }
     }
 
-    class Config :CliktCommand() {
+    class Config :CliktCommand(help = "Configure your github personal access token") {
         override fun run() {
             val settings = Settings()
             if (settings.hasKey(KEY_GITHUB_DEFAULT)) {
@@ -49,19 +51,19 @@ class Github : CliktCommand() {
         }
     }
 
-    class RateLimit: CliktCommand() {
+    class RateLimit: CliktCommand(help = "Check your github api key rate limit status") {
         override fun run() {
             val output = runBlocking { GitHubApi().ratelimit() }
             println(output)
         }
     }
 
-    abstract class GithubPRCommand: CliktCommand() {
-        val org by option().default("builderio")
-        val team by option()
-        val author by option()
-        val days by option().int().default(30)
-        val fullDetails by option().flag(defaultForHelp = "Fetch detailed PR data, slows down the command")
+    abstract class GithubPRCommand(help: String = ""): CliktCommand(help = help) {
+        val org by option().default("builderio").help("The primary github organization to filter activity by")
+        val team by option().help("Will look at activity by all members of the team")
+        val author by option().help("Will look at activity only by this github user")
+        val days by option().int().default(30).help("Look at the last N days of activity")
+        val fullDetails by option().flag().help("Fetch more detailed PR data (slower)")
 
         protected suspend fun loadPrs(filterForOrg: Boolean = true, fetchDetails: Boolean = false): List<UserPrs> {
             var page = 1
@@ -101,7 +103,7 @@ class Github : CliktCommand() {
         }
     }
 
-    class UserPrStats : GithubPRCommand() {
+    class UserPrStats : GithubPRCommand(help = "Get a report of PR activity for a given user") {
         override fun run() {
             if (author == null) {
                 throw UsageError("Need to supply an author", "author")
@@ -175,7 +177,7 @@ class Github : CliktCommand() {
         }
     }
 
-    class TeamPrStats : GithubPRCommand() {
+    class TeamPrStats : GithubPRCommand(help = "Get a report of PR activity by user for a given team") {
         override fun run() {
             val prs = runBlocking {
                 loadPrs(fetchDetails = fullDetails)
