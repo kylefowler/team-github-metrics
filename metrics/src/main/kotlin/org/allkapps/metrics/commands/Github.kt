@@ -19,7 +19,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.*
 import org.allkapps.metrics.github.*
 
-private const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
+const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 
 class Github : CliktCommand() {
     override fun run() {

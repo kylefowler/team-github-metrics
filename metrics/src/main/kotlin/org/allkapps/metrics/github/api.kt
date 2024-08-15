@@ -16,11 +16,11 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.datetime.LocalDate
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import org.allkapps.metrics.commands.Github
+import org.allkapps.metrics.commands.KEY_GITHUB_DEFAULT
 import kotlinx.coroutines.*
 
 fun createGitHubClient(): HttpClient {
-    val token = Settings().getString(Github.Config.KEY_GITHUB_DEFAULT, "")
+    val token = Settings().getString(KEY_GITHUB_DEFAULT, "")
     return HttpClient(OkHttp) {
         install(ContentNegotiation) {
             json(Json {
