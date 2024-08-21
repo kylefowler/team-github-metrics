@@ -80,10 +80,11 @@ class GitHubApi {
         return Pair(parts[1], parts[2])
     }
 
-    suspend fun prDetails(prs: List<GitHubIssue>): List<GraphQLResponse<Map<String, Map<String, GraphQLPullRequestNode>>>> = coroutineScope {
+    suspend fun prDetails(prs: List<GitHubIssue>, includeReviews: Boolean = false, includeComments: Boolean = false): List<GraphQLResponse<Map<String, Map<String, GraphQLPullRequestNode>>>> = coroutineScope {
+
         val repos = prs.groupBy { it.repositoryUrl }.mapValues { (k, v) ->
             v.mapIndexed { index, gitHubIssue ->
-                "pullRequest${index + 1}: pullRequest(number: ${gitHubIssue.number}) { number additions deletions changedFiles totalCommentsCount title author { login } url }"
+                "pullRequest${index + 1}: pullRequest(number: ${gitHubIssue.number}) { number additions deletions changedFiles totalCommentsCount title author { login } url ${if (includeComments) comments else ""} ${if (includeReviews) reviews else ""} }"
             }.joinToString("\n")
         }
         val fullQuery = repos.entries.mapIndexed { index, entry ->
@@ -133,5 +134,32 @@ class GitHubApi {
 
     suspend fun getTeamMembers(org: String, team: String): List<User> {
         return client.get("/orgs/$org/teams/$team/members").body<List<User>>()
+    }
+
+    companion object {
+        internal val comments = """
+            comments(first: 100) {
+        nodes {
+          author {
+            login
+          }
+          body
+          createdAt
+        }
+      }
+        """.trimIndent()
+
+        internal val reviews = """
+            reviews(first: 100) {
+        nodes {
+          author {
+            login
+          }
+          body
+          state
+          createdAt
+        }
+      }
+        """.trimIndent()
     }
 }

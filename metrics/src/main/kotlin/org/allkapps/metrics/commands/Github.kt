@@ -60,7 +60,10 @@ class Github : CliktCommand() {
         val days by option().int().default(30).help("Look at the last N days of activity")
         val fullDetails by option().flag().help("Fetch more detailed PR data (slower)")
 
-        protected suspend fun loadPrs(filterForOrg: Boolean = true, fetchDetails: Boolean = false): List<UserPrs> {
+        open val fetchReviewsInDetail = false
+        open val fetchCommentsInDetail = false
+
+        protected suspend fun loadPrs(filterForOrg: Boolean = true): List<UserPrs> {
             var page = 1
             val perPage = 100
             var hasNextPage = true
@@ -84,8 +87,8 @@ class Github : CliktCommand() {
                 page++
             }
             val allPRs = allResults.filter { pr -> if (filterForOrg) pr.url.lowercase().contains(org.lowercase()) else true }
-            val detailUpdate = if (fetchDetails) {
-                val prDetails = GitHubApi().prDetails(allPRs).flatMap { req ->
+            val detailUpdate = if (fullDetails) {
+                val prDetails = GitHubApi().prDetails(allPRs, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
                     req.data.values.flatMap { repo -> repo.values }
                 }.associateBy { pr -> pr.url }
                 allPRs.map { it.copy(moreDetails = prDetails[it.htmlUrl]) }
@@ -98,20 +101,15 @@ class Github : CliktCommand() {
         }
     }
 
-    class UserPrStats : GithubPRCommand(help = "Get a report of PR activity for a given user") {
+    class TeamReviewParticipation : GithubPRCommand(help = "Get a report for how active someone is in participating in code reviews") {
+        override val fetchReviewsInDetail = true
+        override val fetchCommentsInDetail = true
+
         override fun run() {
-            if (author == null) {
-                throw UsageError("Need to supply an author", "author")
-            }
             val prs = runBlocking {
-                loadPrs(filterForOrg = false, fetchDetails = fullDetails)
+                loadPrs()
             }
-            val userStats = prs
-            val columns = if (fullDetails) {
-                9
-            } else {
-                6
-            }
+
             println(
                 table {
                     header {
@@ -121,23 +119,18 @@ class Github : CliktCommand() {
                             paddingRight = 1
                         }
                         row {
-                            cell(TextColors.brightBlue.bg(" Last $days days of PRs for $author")) {
+                            cell(TextColors.brightBlue.bg(" Last $days days of PR review activity")) {
                                 alignment = TextAlignment.TopCenter
-                                columnSpan = columns
+                                columnSpan = 6
                             }
                         }
                         val headers = mutableListOf<Any?>().apply {
-                            add("Repo")
-                            add("Total PRs")
-                            add("Open")
-                            add("Merged")
-                            add("Avg Days Open")
-                            add("Comments")
-                            if (fullDetails) {
-                                add("Lines Added")
-                                add("Lines Deleted")
-                                add("Changed Files")
-                            }
+                            add("User")
+                            add("Total PRs Reviewed")
+                            add("Comments Left")
+                            add("Prs Approved")
+                            add("Requested Changes")
+                            add("Pending")
                         }
                         row {
                             headers.forEach { cell(it) }
@@ -148,19 +141,14 @@ class Github : CliktCommand() {
                             paddingLeft = 1
                             paddingRight = 1
                         }
-                        Stats.computeActivityStatsForUser(userStats).sortedByDescending { it.total }.forEach { stat ->
+                        Stats.computeReviewStatsForTeam(prs).sortedByDescending { it.prsReviewed }.forEach { stat ->
                             val cells = mutableListOf<Any>().apply {
-                                add(stat.repo)
-                                add(stat.total)
-                                add(stat.open)
-                                add(stat.merged)
-                                add(stat.avgDaysOpen)
-                                add(stat.comments)
-                                if (fullDetails) {
-                                    add(stat.additions)
-                                    add(stat.subtractions)
-                                    add(stat.filesChanged)
-                                }
+                                add(stat.user.login)
+                                add(stat.prsReviewed)
+                                add(stat.commentsLeft)
+                                add(stat.prsApproved)
+                                add(stat.prsRequestedChanges)
+                                add(stat.reviewsPending)
                             }
                             row {
                                 cells.forEach { cell(it) }
@@ -172,10 +160,83 @@ class Github : CliktCommand() {
         }
     }
 
+    class UserPrStats : GithubPRCommand(help = "Get a report of PR activity for a given user") {
+        override fun run() {
+            if (author == null) {
+                throw UsageError("Need to supply an author", "author")
+            }
+            val prs = runBlocking {
+                loadPrs(filterForOrg = false)
+            }
+            val userStats = prs
+            val columns = if (fullDetails) {
+                9
+            } else {
+                6
+            }
+            val output = table {
+                header {
+                    cellStyle {
+                        border = true
+                        paddingLeft = 1
+                        paddingRight = 1
+                    }
+                    row {
+                        cell(TextColors.brightBlue.bg(" Last $days days of PRs for $author")) {
+                            alignment = TextAlignment.TopCenter
+                            columnSpan = columns
+                        }
+                    }
+                    val headers = mutableListOf<Any?>().apply {
+                        add("Repo")
+                        add("Total PRs")
+                        add("Open")
+                        add("Merged")
+                        add("Avg Days Open")
+                        add("Comments")
+                        if (fullDetails) {
+                            add("Lines Added")
+                            add("Lines Deleted")
+                            add("Changed Files")
+                        }
+                    }
+                    row {
+                        headers.forEach { cell(it) }
+                    }
+                }
+                body {
+                    cellStyle {
+                        paddingLeft = 1
+                        paddingRight = 1
+                    }
+                    Stats.computeActivityStatsForUser(userStats).sortedByDescending { it.total }.forEach { stat ->
+                        val cells = mutableListOf<Any>().apply {
+                            add(stat.repo)
+                            add(stat.total)
+                            add(stat.open)
+                            add(stat.merged)
+                            add(stat.avgDaysOpen)
+                            add(stat.comments)
+                            if (fullDetails) {
+                                add(stat.additions)
+                                add(stat.subtractions)
+                                add(stat.filesChanged)
+                            }
+                        }
+                        row {
+                            cells.forEach { cell(it) }
+                        }
+                    }
+                }
+            }.renderText()
+            println(output)
+        }
+    }
+
     class TeamPrStats : GithubPRCommand(help = "Get a report of PR activity by user for a given team") {
         override fun run() {
             val prs = runBlocking {
-                loadPrs(fetchDetails = fullDetails)
+                loadPrs()
             }
             val userStats = prs
             val columns = if (fullDetails) {
@@ -272,6 +333,14 @@ object Stats {
         val subtractions: Int,
         val filesChanged: Int
     )
+    data class ReviewStats(
+        val user: User,
+        val prsReviewed: Int,
+        val commentsLeft: Int,
+        val prsApproved: Int,
+        val prsRequestedChanges: Int,
+        val reviewsPending: Int
+    )
 
     fun computeActivityStats(prs: List<UserPrs>): List<ActivityStats> {
         return prs.map { up ->
@@ -307,6 +376,38 @@ object Stats {
                     prList.sumOf { it.moreDetails?.changedFiles ?: 0 }
                 )
             }.values
+        }
+    }
+
+    fun computeReviewStatsForTeam(prs: List<UserPrs>): List<ReviewStats> {
+        val allReviewsByAuthor = prs.flatMap {
+            it.prs.flatMap {
+                issue -> issue.moreDetails?.reviews?.nodes?.map {
+                    r -> Pair(r, issue)
+                } ?: emptyList()
+            }
+        }.groupBy { it.first.author }
+        val allCommentsByAuthor = prs.flatMap {
+            it.prs.flatMap {
+                issue -> issue.moreDetails?.comments?.nodes?.map {
+                    c -> Pair(c, issue)
+                } ?: emptyList()
+            }
+        }.groupBy { it.first.author }
+
+        val authors = allReviewsByAuthor.keys.toSet() + allCommentsByAuthor.keys.toSet()
+
+        return authors.map { author ->
+            val reviews = allReviewsByAuthor[author] ?: emptyList()
+            val comments = allCommentsByAuthor[author]?.filter { it.first.author.login != it.second.user.login } ?: emptyList()
+            ReviewStats(
+                User(author.login),
+                (reviews.map { it.second.number } + comments.map { it.second.number }).distinct().size,
+                comments.size + reviews.count { it.first.state == ReviewState.COMMENTED },
+                reviews.count { it.first.state == ReviewState.APPROVED },
+                reviews.count { it.first.state == ReviewState.CHANGES_REQUESTED },
+                reviews.count { it.first.state == ReviewState.PENDING },
+            )
         }
     }
 }

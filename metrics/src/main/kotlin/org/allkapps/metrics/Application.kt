@@ -12,6 +12,7 @@ fun main(args: Array<String>) = Metrics()
                 Github.Config(),
                 Github.RateLimit(),
                 Github.TeamPrStats(),
-                Github.UserPrStats()
+                Github.UserPrStats(),
+                Github.TeamReviewParticipation()
             )
     ).main(args)
