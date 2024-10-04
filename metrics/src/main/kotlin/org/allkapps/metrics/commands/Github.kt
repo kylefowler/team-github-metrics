@@ -8,7 +8,6 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
-import com.github.ajalt.mordant.rendering.TextColors
 import com.jakewharton.picnic.TextAlignment
 import com.jakewharton.picnic.renderText
 import com.jakewharton.picnic.table
@@ -58,7 +57,7 @@ class Github : CliktCommand() {
         val team by option().help("Will look at activity by all members of the team")
         val author by option().help("Will look at activity only by this github user")
         val days by option().int().default(30).help("Look at the last N days of activity")
-        val fullDetails by option().flag().help("Fetch more detailed PR data (slower)")
+        open val fullDetails by option().flag().help("Fetch more detailed PR data (slower)")
 
         open val fetchReviewsInDetail = false
         open val fetchCommentsInDetail = false
@@ -104,6 +103,7 @@ class Github : CliktCommand() {
     class TeamReviewParticipation : GithubPRCommand(help = "Get a report for how active someone is in participating in code reviews") {
         override val fetchReviewsInDetail = true
         override val fetchCommentsInDetail = true
+        override val fullDetails = true
 
         override fun run() {
             val prs = runBlocking {
@@ -119,7 +119,7 @@ class Github : CliktCommand() {
                             paddingRight = 1
                         }
                         row {
-                            cell(TextColors.brightBlue.bg(" Last $days days of PR review activity")) {
+                            cell("Last $days days of PR review activity") {
                                 alignment = TextAlignment.TopCenter
                                 columnSpan = 6
                             }
@@ -182,7 +182,7 @@ class Github : CliktCommand() {
                         paddingRight = 1
                     }
                     row {
-                        cell(TextColors.brightBlue.bg(" Last $days days of PRs for $author")) {
+                        cell(" Last $days days of PRs for $author") {
                             alignment = TextAlignment.TopCenter
                             columnSpan = columns
                         }
@@ -209,7 +209,7 @@ class Github : CliktCommand() {
                         paddingLeft = 1
                         paddingRight = 1
                     }
-                    Stats.computeActivityStatsForUser(userStats).sortedByDescending { it.total }.forEach { stat ->
+                    Stats.computeActivityStatsForUser(userStats).sortedByDescending { it.merged }.forEach { stat ->
                         val cells = mutableListOf<Any>().apply {
                             add(stat.repo)
                             add(stat.total)
@@ -253,7 +253,7 @@ class Github : CliktCommand() {
                             paddingRight = 1
                         }
                         row {
-                            cell(TextColors.brightBlue.bg(" Last $days days of PRs ")) {
+                            cell(" Last $days days of PRs ") {
                                 alignment = TextAlignment.TopCenter
                                 columnSpan = columns
                             }
@@ -280,7 +280,7 @@ class Github : CliktCommand() {
                             paddingLeft = 1
                             paddingRight = 1
                         }
-                        Stats.computeActivityStats(userStats).sortedByDescending { it.total }.forEach { stat ->
+                        Stats.computeActivityStats(userStats).sortedByDescending { it.merged }.forEach { stat ->
                             val cells = mutableListOf<Any>().apply {
                                 add(stat.user.login)
                                 add(stat.total)
@@ -311,6 +311,20 @@ data class UserPrs(
 )
 
 object Stats {
+    private val excludeBotUsers = setOf(
+        "github-actions",
+        "relativeci",
+        "nx-cloud",
+        "changeset-bot",
+        "gitguardian",
+        "netlify",
+        "cloudflare-pages",
+        "vercel",
+        "sentry-io",
+        "aws-amplify-us-east-1",
+        "VitaliyHr"
+    )
+
     data class ActivityStats(
         val user: User,
         val total: Int,
@@ -397,7 +411,7 @@ object Stats {
 
         val authors = allReviewsByAuthor.keys.toSet() + allCommentsByAuthor.keys.toSet()
 
-        return authors.map { author ->
+        return authors.filterNot { excludeBotUsers.contains(it.login) }.map { author ->
             val reviews = allReviewsByAuthor[author] ?: emptyList()
             val comments = allCommentsByAuthor[author]?.filter { it.first.author.login != it.second.user.login } ?: emptyList()
             ReviewStats(

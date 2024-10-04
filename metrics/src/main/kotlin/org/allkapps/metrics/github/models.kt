@@ -7,7 +7,7 @@ import kotlin.math.absoluteValue
 
 @Serializable
 data class GithubIssueSearch(
-    @SerialName("total_count") val totalCount: Int,
+    @SerialName("total_count") val totalCount: Int = 0,
     @SerialName("incomplete_results") val incompleteResults: Boolean = false,
     val items: List<GitHubIssue> = emptyList()
 )
