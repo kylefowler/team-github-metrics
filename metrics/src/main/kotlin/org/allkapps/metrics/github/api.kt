@@ -53,9 +53,13 @@ fun createGitHubClient(): HttpClient {
     }
 }
 
-val client = createGitHubClient()
-
 class GitHubApi {
+    val client = createGitHubClient()
+
+    fun close() {
+        client.close()
+    }
+
     suspend fun ratelimit(): String {
         return client.get("/rate_limit").body<String>()
     }

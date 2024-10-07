@@ -47,8 +47,10 @@ class Github : CliktCommand() {
 
     class RateLimit: CliktCommand(help = "Check your github api key rate limit status") {
         override fun run() {
-            val output = runBlocking { GitHubApi().ratelimit() }
+            val githubApi = GitHubApi()
+            val output = runBlocking { githubApi.ratelimit() }
             println(output)
+            githubApi.close()
         }
     }
 
@@ -62,6 +64,19 @@ class Github : CliktCommand() {
         open val fetchReviewsInDetail = false
         open val fetchCommentsInDetail = false
 
+        private val githubApi = GitHubApi()
+
+        fun shutdown() {
+            githubApi.close()
+        }
+
+        override fun run() {
+            runCommand()
+            shutdown()
+        }
+
+        abstract fun runCommand()
+
         protected suspend fun loadPrs(filterForOrg: Boolean = true): List<UserPrs> {
             var page = 1
             val perPage = 100
@@ -71,7 +86,7 @@ class Github : CliktCommand() {
             val startDate = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
 
             while (hasNextPage) {
-                val prResponse = GitHubApi().searchPRs(
+                val prResponse = githubApi.searchPRs(
                     if (filterForOrg) org else null,
                     team = team,
                     author = author,
@@ -87,7 +102,7 @@ class Github : CliktCommand() {
             }
             val allPRs = allResults.filter { pr -> if (filterForOrg) pr.url.lowercase().contains(org.lowercase()) else true }
             val detailUpdate = if (fullDetails) {
-                val prDetails = GitHubApi().prDetails(allPRs, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
+                val prDetails = githubApi.prDetails(allPRs, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
                     req.data.values.flatMap { repo -> repo.values }
                 }.associateBy { pr -> pr.url }
                 allPRs.map { it.copy(moreDetails = prDetails[it.htmlUrl]) }
@@ -105,7 +120,7 @@ class Github : CliktCommand() {
         override val fetchCommentsInDetail = true
         override val fullDetails = true
 
-        override fun run() {
+        override fun runCommand() {
             val prs = runBlocking {
                 loadPrs()
             }
@@ -161,7 +176,7 @@ class Github : CliktCommand() {
     }
 
     class UserPrStats : GithubPRCommand(help = "Get a report of PR activity for a given user") {
-        override fun run() {
+        override fun runCommand() {
             if (author == null) {
                 throw UsageError("Need to supply an author", "author")
             }
@@ -234,7 +249,7 @@ class Github : CliktCommand() {
     }
 
     class TeamPrStats : GithubPRCommand(help = "Get a report of PR activity by user for a given team") {
-        override fun run() {
+        override fun runCommand() {
             val prs = runBlocking {
                 loadPrs()
             }
