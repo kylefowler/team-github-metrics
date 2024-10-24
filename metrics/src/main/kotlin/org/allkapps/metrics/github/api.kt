@@ -105,7 +105,8 @@ class GitHubApi {
         author: String? = null,
         startDate: LocalDate? = null,
         page: Int = 1,
-        perPage: Int = 100
+        perPage: Int = 100,
+        mergedOnly: Boolean = false
     ): HttpResponse {
         val queryTerms = mutableListOf<String>().apply {
             add("is:pr")
@@ -124,6 +125,9 @@ class GitHubApi {
             if (startDate != null) {
                 add("created:>${startDate}")
             }
+            if (mergedOnly) {
+                add("is:merged")
+            }
         }
         return client.get("/search/issues") {
             url {
@@ -138,6 +142,22 @@ class GitHubApi {
 
     suspend fun getTeamMembers(org: String, team: String): List<User> {
         return client.get("/orgs/$org/teams/$team/members").body<List<User>>()
+    }
+
+    suspend fun getRepos(org: String): List<Repository> {
+        return client.get("/orgs/$org/repos") {
+            url {
+                parameters.append("sort", "updated")
+            }
+        }.body()
+    }
+
+    suspend fun getCommitsForRepo(org: String, repo: String, since: LocalDate): List<Commit> {
+        return client.get("/repos/$org/$repo/commits") {
+            url {
+                parameters.append("since", since.toString())
+            }
+        }.body()
     }
 
     companion object {

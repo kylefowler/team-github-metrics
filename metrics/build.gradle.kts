@@ -28,4 +28,5 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.multiplatform.settings)
     implementation(libs.multiplatform.settings.noarg)
+    implementation(libs.openai.client)
 }

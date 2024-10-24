@@ -13,6 +13,7 @@ fun main(args: Array<String>) = Metrics()
                 Github.RateLimit(),
                 Github.TeamPrStats(),
                 Github.UserPrStats(),
-                Github.TeamReviewParticipation()
+                Github.TeamReviewParticipation(),
+                Github.Changelog()
             )
     ).main(args)

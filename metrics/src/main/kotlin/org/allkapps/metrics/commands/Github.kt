@@ -1,5 +1,12 @@
 package org.allkapps.metrics.commands
 
+import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.logging.LogLevel
+import com.aallam.openai.api.model.ModelId
+import com.aallam.openai.client.LoggingConfig
+import com.aallam.openai.client.OpenAI
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.core.terminal
@@ -14,11 +21,16 @@ import com.jakewharton.picnic.table
 import com.russhwolf.settings.Settings
 import io.ktor.client.call.*
 import io.ktor.http.*
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.*
 import org.allkapps.metrics.github.*
+import java.io.File
 
 const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
+const val KEY_OPENAI_DEFAULT: String = "openai_api_key_default"
 
 class Github : CliktCommand() {
     override fun run() {
@@ -27,19 +39,31 @@ class Github : CliktCommand() {
         }
     }
 
-    class Config : CliktCommand(help = "Configure your github personal access token") {
+    class Config : CliktCommand(help = "Configure your github personal access token and other keys") {
         override fun run() {
             val settings = Settings()
             if (settings.hasKey(KEY_GITHUB_DEFAULT)) {
                 val verify = terminal.prompt("GitHub token already exists, replace?", "Y", showDefault = true, showChoices = true, choices = listOf("Y", "N"))
                 if (verify == "Y") {
                     terminal.prompt("Enter your GitHub personal access token")?.also {
-                        settings.putString("github_access_key_default", it)
+                        settings.putString(KEY_GITHUB_DEFAULT, it)
                     }
                 }
             } else {
                 terminal.prompt("Enter your GitHub personal access token")?.also {
-                    settings.putString("github_access_key_default", it)
+                    settings.putString(KEY_GITHUB_DEFAULT, it)
+                }
+            }
+            if (settings.hasKey(KEY_OPENAI_DEFAULT)) {
+                val verify = terminal.prompt("OpenAI key already exists, replace?", "Y", showDefault = true, showChoices = true, choices = listOf("Y", "N"))
+                if (verify == "Y") {
+                    terminal.prompt("Enter your OpenAI key")?.also {
+                        settings.putString(KEY_OPENAI_DEFAULT, it)
+                    }
+                }
+            } else {
+                terminal.prompt("Enter your OpenAi key")?.also {
+                    settings.putString(KEY_OPENAI_DEFAULT, it)
                 }
             }
         }
@@ -316,6 +340,56 @@ class Github : CliktCommand() {
                     }
                 }.renderText()
             )
+        }
+    }
+
+    class Changelog : CliktCommand() {
+        val org by option().default("builderio").help("The primary github organization to filter activity by")
+        val days by option().int().default(7).help("Look at the last N days of activity")
+
+        override fun run() {
+            val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+            val since = today.minus(DateTimeUnit.DayBased(days))
+            val githubApi = GitHubApi()
+            val mergedPrs = runBlocking { githubApi.searchPRs(org, startDate = since, mergedOnly = true).body<GithubIssueSearch>().items }
+            val changelogContent = mergedPrs.joinToString("\n\n") {
+                "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body></pr>"
+            }
+
+            val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None))
+            val output = runBlocking {
+                chat(openAi, changelogContent)
+            }
+            File("changelog_${since}_${today}.md").writeText(output)
+            githubApi.close()
+        }
+
+        suspend fun chat(openAI: OpenAI, changelogContent: String): String {
+            val chatCompletionRequest = ChatCompletionRequest(
+                model = ModelId("gpt-4o"),
+                messages = listOf(
+                    ChatMessage(
+                        role = ChatRole.System,
+                        content = "You are a product marketing manager trying to create a public facing changelog from " +
+                                "engineering pull request titles and descriptions. This needs to be something that customers will understand " +
+                                "but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags," +
+                                " how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR." +
+                                "The items should summarize for a customer what has changed and what they can expect. Dont go into too many details " +
+                                "about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. " +
+                                "Dont include PR links, ignore ones with test: or chore: in the title"
+                    ),
+                    ChatMessage(
+                        role = ChatRole.User,
+                        content = "Turn the following prs into a public changelog: \n $changelogContent”"
+                    )
+                )
+            )
+            val result = StringBuilder()
+            openAI.chatCompletions(chatCompletionRequest)
+                .onEach { result.append(it.choices.firstOrNull()?.delta?.content.orEmpty()) }
+                .onCompletion { result.append("\n") }
+                .collect()
+            return result.toString()
         }
     }
 }
