@@ -45,6 +45,7 @@ class Github : CliktCommand() {
 
         override fun run() {
             val settings = Settings()
+
             if (githubToken != null && openAiKey != null) {
                 settings.putString(KEY_GITHUB_DEFAULT, githubToken!!)
                 settings.putString(KEY_OPENAI_DEFAULT, openAiKey!!)
@@ -361,7 +362,7 @@ class Github : CliktCommand() {
             val githubApi = GitHubApi()
             val mergedPrs = runBlocking { githubApi.searchPRs(org, startDate = since, mergedOnly = true).body<GithubIssueSearch>().items }
             val changelogContent = mergedPrs.joinToString("\n\n") {
-                "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body></pr>"
+                "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body><link>${it.htmlUrl}</link></pr>"
             }
 
             val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None))
@@ -383,8 +384,9 @@ class Github : CliktCommand() {
                                 "but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags," +
                                 " how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR." +
                                 "The items should summarize for a customer what has changed and what they can expect. Dont go into too many details " +
-                                "about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. " +
-                                "Dont include PR links, ignore ones with test: or chore: in the title"
+                                "about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. When generating summaries, " +
+                                " if possible include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input." +
+                                "Ignore ones with 'test:' or 'chore:' in the title"
                     ),
                     ChatMessage(
                         role = ChatRole.User,
