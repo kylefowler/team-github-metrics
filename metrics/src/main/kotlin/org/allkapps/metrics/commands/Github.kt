@@ -40,8 +40,16 @@ class Github : CliktCommand() {
     }
 
     class Config : CliktCommand(help = "Configure your github personal access token and other keys") {
+        val githubToken by option().help("Optional GitHub access token")
+        val openAiKey by option().help("Optional OpenAI API key")
+
         override fun run() {
             val settings = Settings()
+            if (githubToken != null && openAiKey != null) {
+                settings.putString(KEY_GITHUB_DEFAULT, githubToken!!)
+                settings.putString(KEY_OPENAI_DEFAULT, openAiKey!!)
+                return
+            }
             if (settings.hasKey(KEY_GITHUB_DEFAULT)) {
                 val verify = terminal.prompt("GitHub token already exists, replace?", "Y", showDefault = true, showChoices = true, choices = listOf("Y", "N"))
                 if (verify == "Y") {
