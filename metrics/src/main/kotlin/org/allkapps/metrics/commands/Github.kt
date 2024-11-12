@@ -364,7 +364,6 @@ class Github : CliktCommand() {
                 "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body></pr>"
             }
 
-            println(Settings().getString(KEY_OPENAI_DEFAULT, ""))
             val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None))
             val output = runBlocking {
                 chat(openAi, changelogContent)
