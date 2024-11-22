@@ -5,7 +5,7 @@ clikt = "4.4.0"
 coroutines = "1.8.1"
 serialization = "1.6.2"
 settings = "1.1.1"
-logback = "1.4.11"
+logback = "1.4.14"
 datetime = "0.4.0"
 picnic = "0.7.0"
 openai = "3.8.2"
@@ -27,6 +27,7 @@ multiplatform-settings = { module = "com.russhwolf:multiplatform-settings", vers
 multiplatform-settings-noarg = { module = "com.russhwolf:multiplatform-settings-no-arg", version.ref = "settings"}
 picnic = { module = "com.jakewharton.picnic:picnic", version.ref = "picnic"}
 openai-client = { group = "com.aallam.openai", name = "openai-client", version.ref = "openai"}
+logback = { group = "ch.qos.logback", name = "logback-classic", version.ref = "logback" }
 
 [plugins]
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

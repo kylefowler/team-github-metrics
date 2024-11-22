@@ -421,7 +421,8 @@ object Stats {
         "vercel",
         "sentry-io",
         "aws-amplify-us-east-1",
-        "VitaliyHr"
+        "VitaliyHr",
+        "cloudflare-workers-and-pages"
     )
 
     data class ActivityStats(

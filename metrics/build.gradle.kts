@@ -29,4 +29,5 @@ dependencies {
     implementation(libs.multiplatform.settings)
     implementation(libs.multiplatform.settings.noarg)
     implementation(libs.openai.client)
+    implementation(libs.logback)
 }
