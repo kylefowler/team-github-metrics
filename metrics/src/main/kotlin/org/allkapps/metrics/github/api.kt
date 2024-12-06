@@ -106,12 +106,17 @@ class GitHubApi {
         startDate: LocalDate? = null,
         page: Int = 1,
         perPage: Int = 100,
-        mergedOnly: Boolean = false
+        mergedOnly: Boolean = false,
+        endDate: LocalDate? = null,
+        repo: String? = null
     ): HttpResponse {
         val queryTerms = mutableListOf<String>().apply {
             add("is:pr")
-            if (org != null) {
+            if (org != null && repo == null) {
                 add("org:$org")
+            }
+            if (repo != null) {
+                add("repo:$org/$repo")
             }
             if (team != null && org != null && author == null) {
                 val teamMembers = getTeamMembers(org, team)
@@ -122,8 +127,14 @@ class GitHubApi {
             if (author != null) {
                 add("author:$author")
             }
-            if (startDate != null) {
-                add("created:>${startDate}")
+
+            val createdOrMerged = if (mergedOnly) "merged" else "created"
+            if (startDate != null && endDate != null) {
+                add("$createdOrMerged:$startDate..$endDate")
+            } else if (startDate != null) {
+                add("$createdOrMerged:$startDate..*")
+            } else if (endDate != null) {
+                add("$createdOrMerged:<$endDate")
             }
             if (mergedOnly) {
                 add("is:merged")

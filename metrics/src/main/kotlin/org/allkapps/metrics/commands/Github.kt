@@ -355,12 +355,26 @@ class Github : CliktCommand() {
     class Changelog : CliktCommand() {
         val org by option().default("builderio").help("The primary github organization to filter activity by")
         val days by option().int().default(7).help("Look at the last N days of activity")
+        val startDate by option().help("The start date to look at activity from in the format of yyyy-MM-dd")
+        val repo by option().help("A specific repo to look at")
 
         override fun run() {
-            val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+            val today = if (startDate != null) {
+                LocalDate.parse(startDate!!)
+            } else {
+                Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+            }
             val since = today.minus(DateTimeUnit.DayBased(days))
             val githubApi = GitHubApi()
-            val mergedPrs = runBlocking { githubApi.searchPRs(org, startDate = since, mergedOnly = true).body<GithubIssueSearch>().items }
+            val mergedPrs = runBlocking {
+                githubApi.searchPRs(
+                    org,
+                    startDate = since,
+                    mergedOnly = true,
+                    endDate = if (startDate != null) today else null,
+                    repo = repo
+                ).body<GithubIssueSearch>().items
+            }
             val changelogContent = mergedPrs.joinToString("\n\n") {
                 "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body><link>${it.htmlUrl}</link></pr>"
             }
