@@ -52,7 +52,13 @@ class Github : CliktCommand() {
                 return
             }
             if (settings.hasKey(KEY_GITHUB_DEFAULT)) {
-                val verify = terminal.prompt("GitHub token already exists, replace?", "Y", showDefault = true, showChoices = true, choices = listOf("Y", "N"))
+                val verify = terminal.prompt(
+                    "GitHub token already exists, replace?",
+                    "Y",
+                    showDefault = true,
+                    showChoices = true,
+                    choices = listOf("Y", "N")
+                )
                 if (verify == "Y") {
                     terminal.prompt("Enter your GitHub personal access token")?.also {
                         settings.putString(KEY_GITHUB_DEFAULT, it)
@@ -64,7 +70,13 @@ class Github : CliktCommand() {
                 }
             }
             if (settings.hasKey(KEY_OPENAI_DEFAULT)) {
-                val verify = terminal.prompt("OpenAI key already exists, replace?", "Y", showDefault = true, showChoices = true, choices = listOf("Y", "N"))
+                val verify = terminal.prompt(
+                    "OpenAI key already exists, replace?",
+                    "Y",
+                    showDefault = true,
+                    showChoices = true,
+                    choices = listOf("Y", "N")
+                )
                 if (verify == "Y") {
                     terminal.prompt("Enter your OpenAI key")?.also {
                         settings.putString(KEY_OPENAI_DEFAULT, it)
@@ -78,7 +90,7 @@ class Github : CliktCommand() {
         }
     }
 
-    class RateLimit: CliktCommand(help = "Check your github api key rate limit status") {
+    class RateLimit : CliktCommand(help = "Check your github api key rate limit status") {
         override fun run() {
             val githubApi = GitHubApi()
             val output = runBlocking { githubApi.ratelimit() }
@@ -87,7 +99,7 @@ class Github : CliktCommand() {
         }
     }
 
-    abstract class GithubPRCommand(help: String = ""): CliktCommand(help = help) {
+    abstract class GithubPRCommand(help: String = "") : CliktCommand(help = help) {
         val org by option().default("builderio").help("The primary github organization to filter activity by")
         val team by option().help("Will look at activity by all members of the team")
         val author by option().help("Will look at activity only by this github user")
@@ -112,7 +124,7 @@ class Github : CliktCommand() {
 
         protected suspend fun loadPrs(filterForOrg: Boolean = true): List<UserPrs> {
             var page = 1
-            val perPage = 100
+            val perPage = 50
             var hasNextPage = true
             val allResults = mutableListOf<GitHubIssue>()
 
@@ -133,10 +145,13 @@ class Github : CliktCommand() {
                 allResults.addAll(prResponse.body<GithubIssueSearch>().items)
                 page++
             }
-            val allPRs = allResults.filter { pr -> if (filterForOrg) pr.url.lowercase().contains(org.lowercase()) else true }
+            val allPRs =
+                allResults.filter { pr -> if (filterForOrg) pr.url.lowercase().contains(org.lowercase()) else true }
             val detailUpdate = if (fullDetails) {
-                val prDetails = githubApi.prDetails(allPRs, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
-                    req.data.values.flatMap { repo -> repo.values }
+                val prDetails = allPRs.chunked(25).flatMap { chunk ->
+                    githubApi.prDetails(chunk, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
+                        req.data.values.flatMap { repo -> repo.values }
+                    }
                 }.associateBy { pr -> pr.url }
                 allPRs.map { it.copy(moreDetails = prDetails[it.htmlUrl]) }
             } else {
@@ -148,7 +163,8 @@ class Github : CliktCommand() {
         }
     }
 
-    class TeamReviewParticipation : GithubPRCommand(help = "Get a report for how active someone is in participating in code reviews") {
+    class TeamReviewParticipation :
+        GithubPRCommand(help = "Get a report for how active someone is in participating in code reviews") {
         override val fetchReviewsInDetail = true
         override val fetchCommentsInDetail = true
         override val fullDetails = true
@@ -189,19 +205,77 @@ class Github : CliktCommand() {
                             paddingLeft = 1
                             paddingRight = 1
                         }
-                        Stats.computeReviewStatsForTeam(prs).sortedByDescending { it.prsReviewed }.forEach { stat ->
-                            val cells = mutableListOf<Any>().apply {
-                                add(stat.user.login)
-                                add(stat.prsReviewed)
-                                add(stat.commentsLeft)
-                                add(stat.prsApproved)
-                                add(stat.prsRequestedChanges)
-                                add(stat.reviewsPending)
+                        Stats.computeReviewStatsForTeam(prs)
+                            .sortedByDescending { it.prsReviewed }.forEach { stat ->
+                                val cells = mutableListOf<Any>().apply {
+                                    add(stat.user.login)
+                                    add(stat.prsReviewed)
+                                    add(stat.commentsLeft)
+                                    add(stat.prsApproved)
+                                    add(stat.prsRequestedChanges)
+                                    add(stat.reviewsPending)
+                                }
+                                row {
+                                    cells.forEach { cell(it) }
+                                }
                             }
-                            row {
-                                cells.forEach { cell(it) }
+                    }
+                }.renderText()
+            )
+        }
+    }
+
+    class UserReviewParticipation :
+        GithubPRCommand(help = "Get a report for how active someone is in participating in code reviews") {
+        override val fetchReviewsInDetail = true
+        override val fetchCommentsInDetail = true
+        override val fullDetails = true
+
+        val user by option().help("Only show activity for a given user")
+
+        override fun runCommand() {
+            val prs = runBlocking {
+                loadPrs()
+            }
+
+            println(
+                table {
+                    header {
+                        cellStyle {
+                            border = true
+                            paddingLeft = 1
+                            paddingRight = 1
+                        }
+                        row {
+                            cell("Last $days days of PR review activity for ${user}") {
+                                alignment = TextAlignment.TopCenter
+                                columnSpan = 3
                             }
                         }
+                        val headers = mutableListOf<Any?>().apply {
+                            add("PR")
+                            add("Reviews")
+                            add("Comments")
+                        }
+                        row {
+                            headers.forEach { cell(it) }
+                        }
+                    }
+                    body {
+                        cellStyle {
+                            paddingLeft = 1
+                            paddingRight = 1
+                        }
+                        Stats.computeReviewStatsForUser(prs, user!!).forEach { stat ->
+                                val cells = mutableListOf<Any>().apply {
+                                    add(stat.pr.htmlUrl)
+                                    add(stat.reviews.map { it.body }.joinToString("\n"))
+                                    add(stat.comments.map { it.bodyText }.joinToString("\n"))
+                                }
+                                row {
+                                    cells.forEach { cell(it) }
+                                }
+                            }
                     }
                 }.renderText()
             )
@@ -282,6 +356,7 @@ class Github : CliktCommand() {
     }
 
     class TeamPrStats : GithubPRCommand(help = "Get a report of PR activity by user for a given team") {
+
         override fun runCommand() {
             val prs = runBlocking {
                 loadPrs()
@@ -436,7 +511,8 @@ object Stats {
         "sentry-io",
         "aws-amplify-us-east-1",
         "VitaliyHr",
-        "cloudflare-workers-and-pages"
+        "cloudflare-workers-and-pages",
+        "speedcurve-ci"
     )
 
     data class ActivityStats(
@@ -450,6 +526,7 @@ object Stats {
         val subtractions: Int,
         val filesChanged: Int
     )
+
     data class RepoStats(
         val repo: String,
         val total: Int,
@@ -461,6 +538,7 @@ object Stats {
         val subtractions: Int,
         val filesChanged: Int
     )
+
     data class ReviewStats(
         val user: User,
         val prsReviewed: Int,
@@ -468,6 +546,12 @@ object Stats {
         val prsApproved: Int,
         val prsRequestedChanges: Int,
         val reviewsPending: Int
+    )
+
+    data class PRDetail(
+        val pr: GitHubIssue,
+        val comments: List<GraphQLComment>,
+        val reviews: List<GraphQLReview>
     )
 
     fun computeActivityStats(prs: List<UserPrs>): List<ActivityStats> {
@@ -507,18 +591,36 @@ object Stats {
         }
     }
 
+    fun computeReviewStatsForUser(prs: List<UserPrs>, user: String): List<PRDetail> {
+        val filteredPrs = prs.filter {
+            it.user.login != user
+        }.flatMap { it.prs }
+            .filter { pr ->
+                pr.moreDetails?.reviews?.nodes?.any { r -> r.author.login == user } == true || pr.moreDetails?.allComments()
+                    ?.any { r -> r.author.login == user } == true
+            }
+            .map { pr ->
+                PRDetail(
+                    pr,
+                    pr.moreDetails?.allComments()?.filter { r -> r.author.login == user } ?: emptyList(),
+                    pr.moreDetails?.reviews?.nodes?.filter { r -> r.author.login == user } ?: emptyList()
+                )
+            }
+        return filteredPrs
+    }
+
     fun computeReviewStatsForTeam(prs: List<UserPrs>): List<ReviewStats> {
         val allReviewsByAuthor = prs.flatMap {
-            it.prs.flatMap {
-                issue -> issue.moreDetails?.reviews?.nodes?.map {
-                    r -> Pair(r, issue)
+            it.prs.flatMap { issue ->
+                issue.moreDetails?.reviews?.nodes?.map { r ->
+                    Pair(r, issue)
                 } ?: emptyList()
             }
         }.groupBy { it.first.author }
         val allCommentsByAuthor = prs.flatMap {
-            it.prs.flatMap {
-                issue -> issue.moreDetails?.comments?.nodes?.map {
-                    c -> Pair(c, issue)
+            it.prs.flatMap { issue ->
+                issue.moreDetails?.allComments()?.map { c ->
+                    Pair(c, issue)
                 } ?: emptyList()
             }
         }.groupBy { it.first.author }
@@ -526,15 +628,19 @@ object Stats {
         val authors = allReviewsByAuthor.keys.toSet() + allCommentsByAuthor.keys.toSet()
 
         return authors.filterNot { excludeBotUsers.contains(it.login) }.map { author ->
-            val reviews = allReviewsByAuthor[author] ?: emptyList()
-            val comments = allCommentsByAuthor[author]?.filter { it.first.author.login != it.second.user.login } ?: emptyList()
+            val reviews =
+                allReviewsByAuthor[author]?.filter { it.first.author.login != it.second.user.login } ?: emptyList()
+            val comments =
+                allCommentsByAuthor[author]?.filter { it.first.author.login != it.second.user.login && it.first.bodyText.isNotBlank() }
+                    ?: emptyList()
+
             ReviewStats(
                 User(author.login),
                 (reviews.map { it.second.number } + comments.map { it.second.number }).distinct().size,
                 comments.size + reviews.count { it.first.state == ReviewState.COMMENTED },
                 reviews.count { it.first.state == ReviewState.APPROVED },
                 reviews.count { it.first.state == ReviewState.CHANGES_REQUESTED },
-                reviews.count { it.first.state == ReviewState.PENDING },
+                reviews.count { it.first.state == ReviewState.PENDING }
             )
         }
     }

@@ -88,7 +88,7 @@ class GitHubApi {
 
         val repos = prs.groupBy { it.repositoryUrl }.mapValues { (k, v) ->
             v.mapIndexed { index, gitHubIssue ->
-                "pullRequest${index + 1}: pullRequest(number: ${gitHubIssue.number}) { number additions deletions changedFiles totalCommentsCount title author { login } url ${if (includeComments) comments else ""} ${if (includeReviews) reviews else ""} }"
+                "pullRequest${index + 1}: pullRequest(number: ${gitHubIssue.number}) { number additions deletions changedFiles totalCommentsCount title author { login } url ${if (includeComments) comments else ""} ${if (includeComments) reviewThreads else ""} ${if (includeReviews) reviews else ""} }"
             }.joinToString("\n")
         }
         val fullQuery = repos.entries.mapIndexed { index, entry ->
@@ -194,6 +194,24 @@ class GitHubApi {
           state
           createdAt
         }
+      }
+        """.trimIndent()
+
+        internal val reviewThreads = """
+            reviewThreads(first: 50) {
+        nodes {
+              comments(first: 10) {
+                nodes {
+                  id
+                  author {
+                    login
+                  }
+                  body
+                  createdAt
+                  bodyText
+                }
+              }
+            }
       }
         """.trimIndent()
     }

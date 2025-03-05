@@ -66,7 +66,7 @@ data class GitHubIssue(
 data class GraphQLAuthor(val login: String)
 
 @Serializable
-data class GraphQLComment(val author: GraphQLAuthor, val body: String = "", val createdAt: Instant)
+data class GraphQLComment(val author: GraphQLAuthor, val body: String = "", val bodyText: String = "", val createdAt: Instant)
 
 @Serializable
 enum class ReviewState {
@@ -81,6 +81,9 @@ enum class ReviewState {
 data class GraphQLReview(val author: GraphQLAuthor, val body: String = "", val createdAt: Instant, val state: ReviewState)
 
 @Serializable
+data class GraphQLThread(val comments: GraphQLNodesList<GraphQLComment>)
+
+@Serializable
 data class GraphQLPullRequestNode(
     val number: Int,
     val additions: Int,
@@ -92,7 +95,12 @@ data class GraphQLPullRequestNode(
     val url: String,
     val comments: GraphQLNodesList<GraphQLComment> = GraphQLNodesList(),
     val reviews: GraphQLNodesList<GraphQLReview> = GraphQLNodesList(),
-)
+    val reviewThreads: GraphQLNodesList<GraphQLThread> = GraphQLNodesList(),
+) {
+    fun allComments(): List<GraphQLComment> {
+        return comments.nodes + reviewThreads.nodes.flatMap { it.comments.nodes }
+    }
+}
 
 @Serializable
 data class GraphQLNodesList<T>(

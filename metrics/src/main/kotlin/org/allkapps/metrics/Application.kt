@@ -14,6 +14,7 @@ fun main(args: Array<String>) = Metrics()
                 Github.TeamPrStats(),
                 Github.UserPrStats(),
                 Github.TeamReviewParticipation(),
+                Github.UserReviewParticipation(),
                 Github.Changelog()
             )
     ).main(args)
