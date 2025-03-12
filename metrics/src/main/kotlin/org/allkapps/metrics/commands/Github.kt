@@ -292,9 +292,9 @@ class Github : CliktCommand() {
             }
             val userStats = prs
             val columns = if (fullDetails) {
-                9
+                10
             } else {
-                6
+                7
             }
             val output = table {
                 header {
@@ -314,6 +314,7 @@ class Github : CliktCommand() {
                         add("Total PRs")
                         add("Open")
                         add("Merged")
+                        add("Closed")
                         add("Avg Days Open")
                         add("Comments")
                         if (fullDetails) {
@@ -337,6 +338,7 @@ class Github : CliktCommand() {
                             add(stat.total)
                             add(stat.open)
                             add(stat.merged)
+                            add(stat.closed)
                             add(stat.avgDaysOpen)
                             add(stat.comments)
                             if (fullDetails) {
@@ -532,6 +534,7 @@ object Stats {
         val total: Int,
         val open: Int,
         val merged: Int,
+        val closed: Int,
         val avgDaysOpen: String,
         val comments: Int,
         val additions: Int,
@@ -581,6 +584,7 @@ object Stats {
                     prList.size,
                     open.size,
                     closed.count { it.pullRequest?.mergedAt != null },
+                    closed.count { it.state == State.closed && it.pullRequest?.mergedAt == null },
                     ((open.sumOf { it.daysOpen() } + closed.sumOf { it.daysOpen() }) / prList.size).format(2),
                     open.sumOf { it.comments } + closed.sumOf { it.comments },
                     prList.sumOf { it.moreDetails?.additions ?: 0 },
