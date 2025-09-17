@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.0.0"
-ktor = "2.3.12"
+ktor = "3.2.3"
 clikt = "4.4.0"
 coroutines = "1.8.1"
 serialization = "1.6.2"
@@ -8,7 +8,7 @@ settings = "1.1.1"
 logback = "1.4.14"
 datetime = "0.4.0"
 picnic = "0.7.0"
-openai = "3.8.2"
+openai = "4.0.1"
 
 [libraries]
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }

@@ -3,6 +3,7 @@ package org.allkapps.metrics.commands
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.logging.LogLevel
 import com.aallam.openai.api.model.ModelId
 import com.aallam.openai.client.LoggingConfig
@@ -14,6 +15,7 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.option
+import com.github.ajalt.clikt.parameters.types.choice
 import com.github.ajalt.clikt.parameters.types.int
 import com.jakewharton.picnic.TextAlignment
 import com.jakewharton.picnic.renderText
@@ -28,6 +30,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.*
 import org.allkapps.metrics.github.*
 import java.io.File
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 
 const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 const val KEY_OPENAI_DEFAULT: String = "openai_api_key_default"
@@ -434,6 +438,8 @@ class Github : CliktCommand() {
         val days by option().int().default(7).help("Look at the last N days of activity")
         val startDate by option().help("The start date to look at activity from in the format of yyyy-MM-dd")
         val repo by option().help("A specific repo to look at")
+        val persona by option().choice("marketing", "engineering").default("marketing")
+            .help("The persona to write the changelog for, marketing will be more high level, engineering more detailed")
 
         override fun run() {
             val today = if (startDate != null) {
@@ -443,20 +449,39 @@ class Github : CliktCommand() {
             }
             val since = today.minus(DateTimeUnit.DayBased(days))
             val githubApi = GitHubApi()
+
             val mergedPrs = runBlocking {
-                githubApi.searchPRs(
-                    org,
-                    startDate = since,
-                    mergedOnly = true,
-                    endDate = if (startDate != null) today else null,
-                    repo = repo
-                ).body<GithubIssueSearch>().items
+                var page = 1
+                val perPage = 50
+                var hasNextPage = true
+                val allResults = mutableListOf<GitHubIssue>()
+
+                while (hasNextPage) {
+                    val prResponse = githubApi.searchPRs(
+                        org,
+                        startDate = since,
+                        mergedOnly = true,
+                        endDate = if (startDate != null) today else null,
+                        repo = repo,
+                        page = page,
+                        perPage = perPage
+                    )
+                    val linkHeader = prResponse.headers[HttpHeaders.Link]
+                    hasNextPage = linkHeader?.contains("rel=\"next\"") == true
+
+                    allResults.addAll(prResponse.body<GithubIssueSearch>().items)
+                    page++
+                }
+                allResults
             }
+
             val changelogContent = mergedPrs.joinToString("\n\n") {
                 "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body><link>${it.htmlUrl}</link></pr>"
             }
 
-            val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None))
+            println("Got ${mergedPrs.size} merged PRs to consider for changelog")
+
+            val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None), timeout = Timeout(2.minutes, 2.minutes, 2.minutes))
             val output = runBlocking {
                 chat(openAi, changelogContent)
             }
@@ -465,19 +490,25 @@ class Github : CliktCommand() {
         }
 
         suspend fun chat(openAI: OpenAI, changelogContent: String): String {
+            val prompt = if (persona == "marketing") {
+                "You are a product marketing manager trying to create a public facing changelog from engineering pull request titles and descriptions. This needs to be something that customers will understand but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags, how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR. The items should summarize for a customer what has changed and what they can expect. Dont go into too many details about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. When generating summaries, if possible include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input. Ignore ones with 'test:' or 'chore:' in the title"
+            } else {
+                """
+                    You are an engineering manager tasked with creating an internal facing changelog from engineering pull request titles and descriptions for non-engineering team consumption. 
+                    It is important that this changelog is detailed so that readers can understand the new features that were added, and the fixes that were being made. Call outs of customer impact and things done for a specific customer are very important to include. You will get details about each PR in a structured format, 
+                    each surrounded with <pr></pr> tags. In order to create the changelog you need to summarize the details of the PRs per repo in a changelog format. If a PR doesnt have a body, just use the title. If there is not enough information to go on, ignore the PR for summarization but include the link to that PR
+                     at the end with others that were ignored. You should not necessarily have one line per PR. The items should summarize for the team what has changed in terms of functionality, bug fixes, improvements for customers and what others can expect.
+                    When generating summaries, if include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input. 
+                    Ignore ones with 'test:' or 'chore:' in the title
+                """.trimIndent()
+            }
+            println(prompt)
             val chatCompletionRequest = ChatCompletionRequest(
-                model = ModelId("gpt-4o"),
+                model = ModelId("gpt-5"),
                 messages = listOf(
                     ChatMessage(
                         role = ChatRole.System,
-                        content = "You are a product marketing manager trying to create a public facing changelog from " +
-                                "engineering pull request titles and descriptions. This needs to be something that customers will understand " +
-                                "but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags," +
-                                " how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR." +
-                                "The items should summarize for a customer what has changed and what they can expect. Dont go into too many details " +
-                                "about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. When generating summaries, " +
-                                " if possible include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input." +
-                                "Ignore ones with 'test:' or 'chore:' in the title"
+                        content = prompt
                     ),
                     ChatMessage(
                         role = ChatRole.User,
@@ -487,7 +518,9 @@ class Github : CliktCommand() {
             )
             val result = StringBuilder()
             openAI.chatCompletions(chatCompletionRequest)
-                .onEach { result.append(it.choices.firstOrNull()?.delta?.content.orEmpty()) }
+                .onEach {
+                    result.append(it.choices.firstOrNull()?.delta?.content.orEmpty())
+                }
                 .onCompletion { result.append("\n") }
                 .collect()
             return result.toString()
