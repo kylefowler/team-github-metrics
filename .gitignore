@@ -73,3 +73,5 @@ gradle-app.setting
 changelog*
 
 # End of https://www.toptal.com/developers/gitignore/api/gradle,kotlin
+
+.config/
