@@ -4,6 +4,7 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.multiple
+import com.github.ajalt.clikt.parameters.options.required
 import com.github.ajalt.clikt.parameters.types.int
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.metrics.Meter
@@ -19,8 +20,7 @@ import java.util.concurrent.TimeUnit
 class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push to Grafana Alloy") {
 
     // Allow overriding the Alloy endpoint if needed
-    private val alloyEndpoint by option("--alloy-url", help = "URL of Grafana Alloy OTLP receiver")
-        .default("")
+    private val alloyEndpoint by option("--alloy-url", help = "URL of Grafana Alloy OTLP receiver").required()
 
     private val org by option("--org", help = "GitHub organization to collect metrics for")
         .default("builderio")
@@ -47,7 +47,7 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             .build()
 
         val metricReader = PeriodicMetricReader.builder(exporter)
-            .setInterval(1, TimeUnit.SECONDS)
+            .setInterval(5, TimeUnit.SECONDS)
             .build()
 
         val sdkMeterProvider = SdkMeterProvider.builder()
