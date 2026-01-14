@@ -28,9 +28,10 @@ import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.*
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.allkapps.metrics.github.*
 import java.io.File
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
 const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
@@ -109,11 +110,15 @@ class Github : CliktCommand() {
         val author by option().help("Will look at activity only by this github user")
         val days by option().int().default(30).help("Look at the last N days of activity")
         open val fullDetails by option().flag().help("Fetch more detailed PR data (slower)")
+        val json by option().flag().help("Output results in JSON format instead of table")
 
         open val fetchReviewsInDetail = false
         open val fetchCommentsInDetail = false
 
         private val githubApi = GitHubApi()
+        protected val jsonSerializer = Json { prettyPrint = true }
+
+        fun getGithubApi(): GitHubApi = githubApi
 
         fun shutdown() {
             githubApi.close()
@@ -127,43 +132,73 @@ class Github : CliktCommand() {
         abstract fun runCommand()
 
         protected suspend fun loadPrs(filterForOrg: Boolean = true): List<UserPrs> {
-            var page = 1
-            val perPage = 50
-            var hasNextPage = true
-            val allResults = mutableListOf<GitHubIssue>()
+            return loadPrsInternal(
+                githubApi = githubApi,
+                org = if (filterForOrg) org else null,
+                team = team,
+                author = author,
+                days = days,
+                filterForOrg = filterForOrg,
+                fullDetails = fullDetails,
+                fetchReviewsInDetail = fetchReviewsInDetail,
+                fetchCommentsInDetail = fetchCommentsInDetail
+            )
+        }
 
-            val startDate = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+        companion object {
+            suspend fun loadPrsInternal(
+                githubApi: GitHubApi,
+                org: String?,
+                team: String?,
+                author: String?,
+                days: Int,
+                filterForOrg: Boolean = true,
+                fullDetails: Boolean = false,
+                fetchReviewsInDetail: Boolean = false,
+                fetchCommentsInDetail: Boolean = false
+            ): List<UserPrs> {
+                var page = 1
+                val perPage = 50
+                var hasNextPage = true
+                val allResults = mutableListOf<GitHubIssue>()
 
-            while (hasNextPage) {
-                val prResponse = githubApi.searchPRs(
-                    if (filterForOrg) org else null,
-                    team = team,
-                    author = author,
-                    page = page,
-                    perPage = perPage,
-                    startDate = startDate.date.minus(days, DateTimeUnit.DAY)
-                )
-                val linkHeader = prResponse.headers[HttpHeaders.Link]
-                hasNextPage = linkHeader?.contains("rel=\"next\"") == true
+                val startDate = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
 
-                allResults.addAll(prResponse.body<GithubIssueSearch>().items)
-                page++
+                while (hasNextPage) {
+                    val prResponse = githubApi.searchPRs(
+                        org,
+                        team = team,
+                        author = author,
+                        page = page,
+                        perPage = perPage,
+                        startDate = startDate.date.minus(days, DateTimeUnit.DAY)
+                    )
+                    val linkHeader = prResponse.headers[HttpHeaders.Link]
+                    hasNextPage = linkHeader?.contains("rel=\"next\"") == true
+
+                    allResults.addAll(prResponse.body<GithubIssueSearch>().items)
+                    page++
+                }
+                val allPRs = if (filterForOrg && org != null) {
+                    allResults.filter { pr -> pr.url.lowercase().contains(org.lowercase()) }
+                } else {
+                    allResults
+                }
+                val detailUpdate = if (fullDetails) {
+                    val prDetails = allPRs.chunked(25).flatMap { chunk ->
+                        githubApi.prDetails(chunk, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
+                            req.data.values.flatMap { repo -> repo.values }
+                        }
+                    }.associateBy { pr -> pr.url }
+                    allPRs.map { it.copy(moreDetails = prDetails[it.htmlUrl]) }
+                } else {
+                    allPRs
+                }
+                return detailUpdate
+                    .groupBy { it.user }
+                    .map { UserPrs(it.key, it.value) }
+                    .filter { !Stats.isExcludedUser(it.user.login) }
             }
-            val allPRs =
-                allResults.filter { pr -> if (filterForOrg) pr.url.lowercase().contains(org.lowercase()) else true }
-            val detailUpdate = if (fullDetails) {
-                val prDetails = allPRs.chunked(25).flatMap { chunk ->
-                    githubApi.prDetails(chunk, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
-                        req.data.values.flatMap { repo -> repo.values }
-                    }
-                }.associateBy { pr -> pr.url }
-                allPRs.map { it.copy(moreDetails = prDetails[it.htmlUrl]) }
-            } else {
-                allPRs
-            }
-            return detailUpdate
-                .groupBy { it.user }
-                .map { UserPrs(it.key, it.value) }
         }
     }
 
@@ -176,6 +211,13 @@ class Github : CliktCommand() {
         override fun runCommand() {
             val prs = runBlocking {
                 loadPrs()
+            }
+
+            val stats = Stats.computeReviewStatsForTeam(prs).sortedByDescending { it.prsReviewed }
+
+            if (json) {
+                println(jsonSerializer.encodeToString(stats))
+                return
             }
 
             println(
@@ -209,20 +251,19 @@ class Github : CliktCommand() {
                             paddingLeft = 1
                             paddingRight = 1
                         }
-                        Stats.computeReviewStatsForTeam(prs)
-                            .sortedByDescending { it.prsReviewed }.forEach { stat ->
-                                val cells = mutableListOf<Any>().apply {
-                                    add(stat.user.login)
-                                    add(stat.prsReviewed)
-                                    add(stat.commentsLeft)
-                                    add(stat.prsApproved)
-                                    add(stat.prsRequestedChanges)
-                                    add(stat.reviewsPending)
-                                }
-                                row {
-                                    cells.forEach { cell(it) }
-                                }
+                        stats.forEach { stat ->
+                            val cells = mutableListOf<Any>().apply {
+                                add(stat.user.login)
+                                add(stat.prsReviewed)
+                                add(stat.commentsLeft)
+                                add(stat.prsApproved)
+                                add(stat.prsRequestedChanges)
+                                add(stat.reviewsPending)
                             }
+                            row {
+                                cells.forEach { cell(it) }
+                            }
+                        }
                     }
                 }.renderText()
             )
@@ -240,6 +281,21 @@ class Github : CliktCommand() {
         override fun runCommand() {
             val prs = runBlocking {
                 loadPrs()
+            }
+
+            val stats = Stats.computeReviewStatsForUser(prs, user!!)
+
+            if (json) {
+                val simplified = stats.map { stat ->
+                    Stats.PRDetailSimplified(
+                        prUrl = stat.pr.htmlUrl,
+                        prTitle = stat.pr.title,
+                        reviews = stat.reviews.map { it.body },
+                        comments = stat.comments.map { it.bodyText }
+                    )
+                }
+                println(jsonSerializer.encodeToString(simplified))
+                return
             }
 
             println(
@@ -270,16 +326,16 @@ class Github : CliktCommand() {
                             paddingLeft = 1
                             paddingRight = 1
                         }
-                        Stats.computeReviewStatsForUser(prs, user!!).forEach { stat ->
-                                val cells = mutableListOf<Any>().apply {
-                                    add(stat.pr.htmlUrl)
-                                    add(stat.reviews.map { it.body }.joinToString("\n"))
-                                    add(stat.comments.map { it.bodyText }.joinToString("\n"))
-                                }
-                                row {
-                                    cells.forEach { cell(it) }
-                                }
+                        stats.forEach { stat ->
+                            val cells = mutableListOf<Any>().apply {
+                                add(stat.pr.htmlUrl)
+                                add(stat.reviews.map { it.body }.joinToString("\n"))
+                                add(stat.comments.map { it.bodyText }.joinToString("\n"))
                             }
+                            row {
+                                cells.forEach { cell(it) }
+                            }
+                        }
                     }
                 }.renderText()
             )
@@ -295,6 +351,13 @@ class Github : CliktCommand() {
                 loadPrs(filterForOrg = false)
             }
             val userStats = prs
+            val stats = Stats.computeActivityStatsForUser(userStats).sortedByDescending { it.merged }
+
+            if (json) {
+                println(jsonSerializer.encodeToString(stats))
+                return
+            }
+
             val columns = if (fullDetails) {
                 10
             } else {
@@ -336,7 +399,7 @@ class Github : CliktCommand() {
                         paddingLeft = 1
                         paddingRight = 1
                     }
-                    Stats.computeActivityStatsForUser(userStats).sortedByDescending { it.merged }.forEach { stat ->
+                    stats.forEach { stat ->
                         val cells = mutableListOf<Any>().apply {
                             add(stat.repo)
                             add(stat.total)
@@ -368,6 +431,13 @@ class Github : CliktCommand() {
                 loadPrs()
             }
             val userStats = prs
+            val stats = Stats.computeActivityStats(userStats).sortedByDescending { it.merged }
+
+            if (json) {
+                println(jsonSerializer.encodeToString(stats))
+                return
+            }
+
             val columns = if (fullDetails) {
                 10
             } else {
@@ -410,7 +480,7 @@ class Github : CliktCommand() {
                             paddingLeft = 1
                             paddingRight = 1
                         }
-                        Stats.computeActivityStats(userStats).sortedByDescending { it.merged }.forEach { stat ->
+                        stats.forEach { stat ->
                             val cells = mutableListOf<Any>().apply {
                                 add(stat.user.login)
                                 add(stat.total)
@@ -549,9 +619,16 @@ object Stats {
         "aws-amplify-us-east-1",
         "VitaliyHr",
         "cloudflare-workers-and-pages",
-        "speedcurve-ci"
+        "speedcurve-ci",
+        "dependabot[bot]",
+        "devin-ai-integration[bot]"
     )
 
+    fun isExcludedUser(username: String): Boolean {
+        return excludeBotUsers.contains(username)
+    }
+
+    @Serializable
     data class ActivityStats(
         val user: User,
         val total: Int,
@@ -565,6 +642,7 @@ object Stats {
         val filesChanged: Int
     )
 
+    @Serializable
     data class RepoStats(
         val repo: String,
         val total: Int,
@@ -578,6 +656,7 @@ object Stats {
         val filesChanged: Int
     )
 
+    @Serializable
     data class ReviewStats(
         val user: User,
         val prsReviewed: Int,
@@ -591,6 +670,14 @@ object Stats {
         val pr: GitHubIssue,
         val comments: List<GraphQLComment>,
         val reviews: List<GraphQLReview>
+    )
+
+    @Serializable
+    data class PRDetailSimplified(
+        val prUrl: String,
+        val prTitle: String,
+        val reviews: List<String>,
+        val comments: List<String>
     )
 
     fun computeActivityStats(prs: List<UserPrs>): List<ActivityStats> {

@@ -30,4 +30,12 @@ dependencies {
     implementation(libs.multiplatform.settings.noarg)
     implementation(libs.openai.client)
     implementation(libs.logback)
+
+    implementation(platform("io.opentelemetry:opentelemetry-bom:1.57.0"))
+
+    implementation("io.opentelemetry:opentelemetry-api")
+    implementation("io.opentelemetry:opentelemetry-sdk")
+    implementation("io.opentelemetry:opentelemetry-sdk-metrics")
+    implementation("io.opentelemetry.semconv:opentelemetry-semconv:1.37.0")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
 }

@@ -2,6 +2,7 @@ package org.allkapps.metrics
 
 import com.github.ajalt.clikt.core.*
 import org.allkapps.metrics.commands.Github
+import org.allkapps.metrics.commands.CollectMetrics
 
 class Metrics : NoOpCliktCommand()
 
@@ -16,5 +17,6 @@ fun main(args: Array<String>) = Metrics()
                 Github.TeamReviewParticipation(),
                 Github.UserReviewParticipation(),
                 Github.Changelog()
-            )
+            ),
+        CollectMetrics()
     ).main(args)
