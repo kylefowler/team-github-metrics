@@ -14,7 +14,10 @@ import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader
 import io.opentelemetry.sdk.resources.Resource
 import io.opentelemetry.semconv.ServiceAttributes
 import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.*
 import org.allkapps.metrics.github.GitHubApi
+import org.allkapps.metrics.cursor.CursorApi
+import org.allkapps.metrics.cursor.UserUsageStats
 import java.util.concurrent.TimeUnit
 
 class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push to Grafana Alloy") {
@@ -62,9 +65,8 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             echo("Collecting GitHub metrics...")
             collectGithubMetrics(meter)
 
-            // TODO: Add Cursor metrics collection
-            // echo("Collecting Cursor metrics...")
-            // collectCursorMetrics(meter)
+            echo("Collecting Cursor metrics...")
+            collectCursorMetrics(meter)
 
             // TODO: Add Builder.io Fusion metrics collection
             // echo("Collecting Builder.io Fusion metrics...")
@@ -376,14 +378,173 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
         echo("Published review metrics for ${reviewStats.size} reviewers")
     }
 
-    // TODO: Implement Cursor metrics collection
+    // Implement Cursor metrics collection
     private fun collectCursorMetrics(meter: Meter) {
-        // Placeholder for Cursor AI usage metrics
-        // This would integrate with Cursor's API to fetch:
-        // - AI-assisted code completions by user
-        // - AI chat interactions
-        // - AI-generated code snippets
-        echo("Cursor metrics collection not yet implemented")
+        val cursorApi = CursorApi()
+
+        try {
+            runBlocking {
+                // Calculate date range: get today and go back X days (like GitHub PR loading)
+                val startDate = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+                val endDate = startDate.date
+                val since = endDate.minus(days, DateTimeUnit.DAY)
+
+                echo("Fetching Cursor usage data from $since to $endDate...")
+
+                // Fetch daily usage data from Cursor API
+                val response = cursorApi.getDailyUsage(
+                    startDate = since,
+                    endDate = endDate
+                )
+
+                echo("Received ${response.data.size} daily usage records")
+
+                // Aggregate data by user email
+                val userDataMap = mutableMapOf<String, MutableList<org.allkapps.metrics.cursor.DailyUsageData>>()
+
+                response.data.forEach { dailyData ->
+                    userDataMap.getOrPut(dailyData.email) { mutableListOf() }.add(dailyData)
+                }
+
+                // Convert to UserUsageStats objects with aggregated data
+                val userStats = userDataMap.map { (email, dailyDataList) ->
+                    val activeDays = dailyDataList.count { it.isActive }
+                    val totalAccepts = dailyDataList.sumOf { it.totalAccepts }
+                    val totalRejects = dailyDataList.sumOf { it.totalRejects }
+                    val totalApplies = dailyDataList.sumOf { it.totalApplies }
+                    val acceptanceRate = if (totalApplies > 0) (totalAccepts.toDouble() / totalApplies.toDouble()) * 100 else 0.0
+
+                    val totalTabsShown = dailyDataList.sumOf { it.totalTabsShown }
+                    val totalTabsAccepted = dailyDataList.sumOf { it.totalTabsAccepted }
+                    val tabAcceptanceRate = if (totalTabsShown > 0) (totalTabsAccepted.toDouble() / totalTabsShown.toDouble()) * 100 else 0.0
+
+                    // Find most common values
+                    val mostCommonModel = dailyDataList.groupBy { it.mostUsedModel }
+                        .maxByOrNull { it.value.size }?.key ?: "N/A"
+                    val mostCommonApplyExt = dailyDataList.groupBy { it.applyMostUsedExtension }
+                        .maxByOrNull { it.value.size }?.key ?: "N/A"
+                    val mostCommonTabExt = dailyDataList.groupBy { it.tabMostUsedExtension }
+                        .maxByOrNull { it.value.size }?.key ?: "N/A"
+                    val latestVersion = dailyDataList.maxByOrNull { it.date }?.clientVersion ?: "N/A"
+
+                    UserUsageStats(
+                        email = email,
+                        totalDaysActive = activeDays,
+                        totalLinesAdded = dailyDataList.sumOf { it.totalLinesAdded },
+                        totalLinesDeleted = dailyDataList.sumOf { it.totalLinesDeleted },
+                        acceptedLinesAdded = dailyDataList.sumOf { it.acceptedLinesAdded },
+                        acceptedLinesDeleted = dailyDataList.sumOf { it.acceptedLinesDeleted },
+                        totalApplies = totalApplies,
+                        totalAccepts = totalAccepts,
+                        totalRejects = totalRejects,
+                        acceptanceRate = acceptanceRate,
+                        totalTabsShown = totalTabsShown,
+                        totalTabsAccepted = totalTabsAccepted,
+                        tabAcceptanceRate = tabAcceptanceRate,
+                        composerRequests = dailyDataList.sumOf { it.composerRequests },
+                        chatRequests = dailyDataList.sumOf { it.chatRequests },
+                        agentRequests = dailyDataList.sumOf { it.agentRequests },
+                        totalAiRequests = dailyDataList.sumOf { it.composerRequests + it.chatRequests + it.agentRequests },
+                        cmdkUsages = dailyDataList.sumOf { it.cmdkUsages },
+                        subscriptionIncludedReqs = dailyDataList.sumOf { it.subscriptionIncludedReqs },
+                        apiKeyReqs = dailyDataList.sumOf { it.apiKeyReqs },
+                        usageBasedReqs = dailyDataList.sumOf { it.usageBasedReqs },
+                        bugbotUsages = dailyDataList.sumOf { it.bugbotUsages },
+                        mostCommonModel = mostCommonModel,
+                        mostCommonApplyExtension = mostCommonApplyExt,
+                        mostCommonTabExtension = mostCommonTabExt,
+                        latestClientVersion = latestVersion
+                    )
+                }.sortedByDescending { it.totalAiRequests }
+
+                // Publish OpenTelemetry metrics
+                publishCursorMetrics(meter, userStats)
+            }
+        } catch (e: Exception) {
+            echo("Error collecting Cursor metrics: ${e.message}")
+            e.printStackTrace()
+        } finally {
+            cursorApi.close()
+        }
+    }
+
+    private fun publishCursorMetrics(meter: Meter, userStats: List<UserUsageStats>) {
+        meter.gaugeBuilder("engmetrics_cursor_days_active")
+            .setDescription("Number of days user was active in Cursor")
+            .setUnit("d")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(
+                        stat.totalDaysActive.toDouble(),
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("days", days.toString())
+                            .build()
+                    )
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_cursor_chat_requests")
+            .setDescription("Total chat requests by user")
+            .setUnit("{request}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(
+                        stat.chatRequests.toDouble(),
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("days", days.toString())
+                            .build()
+                    )
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_cursor_agent_requests")
+            .setDescription("Total agent requests by user")
+            .setUnit("{request}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(
+                        stat.agentRequests.toDouble(),
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("days", days.toString())
+                            .build()
+                    )
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_cursor_lines_added")
+            .setDescription("Total lines added via Cursor by user")
+            .setUnit("{line}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(
+                        stat.totalLinesAdded.toDouble(),
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("days", days.toString())
+                            .build()
+                    )
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_cursor_lines_deleted")
+            .setDescription("Total lines deleted via Cursor by user")
+            .setUnit("{line}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(
+                        stat.totalLinesDeleted.toDouble(),
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("days", days.toString())
+                            .build()
+                    )
+                }
+            }
+
+        echo("Published Cursor metrics for ${userStats.size} users")
     }
 
     // TODO: Implement Builder.io Fusion metrics collection

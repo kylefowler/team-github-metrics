@@ -36,6 +36,7 @@ import kotlin.time.Duration.Companion.minutes
 
 const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 const val KEY_OPENAI_DEFAULT: String = "openai_api_key_default"
+const val KEY_CURSOR_API: String = "cursor_api_key"
 
 class Github : CliktCommand() {
     override fun run() {
@@ -621,7 +622,7 @@ object Stats {
         "cloudflare-workers-and-pages",
         "speedcurve-ci",
         "dependabot[bot]",
-        "devin-ai-integration[bot]"
+        "devin-ai-integration[bot]",
     )
 
     fun isExcludedUser(username: String): Boolean {
