@@ -37,6 +37,7 @@ import kotlin.time.Duration.Companion.minutes
 const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 const val KEY_OPENAI_DEFAULT: String = "openai_api_key_default"
 const val KEY_CURSOR_API: String = "cursor_api_key"
+const val KEY_BUILDER_API: String = "builder_private_key"
 
 class Github : CliktCommand() {
     override fun run() {
