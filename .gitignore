@@ -71,6 +71,7 @@ gradle-app.setting
 *.hprof
 
 changelog*
+qa_test_plan*
 
 # End of https://www.toptal.com/developers/gitignore/api/gradle,kotlin
 

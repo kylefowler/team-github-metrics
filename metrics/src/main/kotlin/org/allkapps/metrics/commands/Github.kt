@@ -555,7 +555,7 @@ class Github : CliktCommand() {
 
             println("Got ${mergedPrs.size} merged PRs to consider for changelog")
 
-            val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None), timeout = Timeout(2.minutes, 2.minutes, 2.minutes))
+            val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None), timeout = Timeout(5.minutes, 2.minutes, 5.minutes))
             val output = runBlocking {
                 chat(openAi, changelogContent)
             }
@@ -587,6 +587,159 @@ class Github : CliktCommand() {
                     ChatMessage(
                         role = ChatRole.User,
                         content = "Turn the following prs into a public changelog: \n $changelogContent”"
+                    )
+                )
+            )
+            val result = StringBuilder()
+            openAI.chatCompletions(chatCompletionRequest)
+                .onEach {
+                    result.append(it.choices.firstOrNull()?.delta?.content.orEmpty())
+                }
+                .onCompletion { result.append("\n") }
+                .collect()
+            return result.toString()
+        }
+    }
+
+    class QaTestPlan : CliktCommand(help = "Generate a QA test plan for changes merged in the last 24 hours") {
+        val org by option().default("builderio").help("The primary github organization to filter activity by")
+        val startDate by option().help("The start date to look at activity from in the format of yyyy-MM-dd")
+        val repos by option().help("Comma-separated list of repo names to include (e.g. builder-internal,ai-services). Overrides --repo.")
+            .default("builder-internal,ai-services")
+
+        override fun run() {
+            val today = if (startDate != null) {
+                LocalDate.parse(startDate!!)
+            } else {
+                Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+            }
+            val since = today.minus(DateTimeUnit.DayBased(1))
+            val githubApi = GitHubApi()
+            val repoFilter = repos.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+            val mergedPrs = runBlocking {
+                var page = 1
+                val perPage = 50
+                var hasNextPage = true
+                val allResults = mutableListOf<GitHubIssue>()
+
+                while (hasNextPage) {
+                    val prResponse = githubApi.searchPRs(
+                        org,
+                        startDate = since,
+                        mergedOnly = true,
+                        endDate = if (startDate != null) today else null,
+                        page = page,
+                        perPage = perPage
+                    )
+                    val linkHeader = prResponse.headers[HttpHeaders.Link]
+                    hasNextPage = linkHeader?.contains("rel=\"next\"") == true
+
+                    allResults.addAll(prResponse.body<GithubIssueSearch>().items)
+                    page++
+                }
+
+                println("Found ${allResults.size} merged PRs in the last 24 hours before filtering for repos")
+
+                allResults.filter { issue ->
+                    repoFilter.any { issue.repositoryUrl.contains(it, ignoreCase = true) }
+                }
+            }
+
+            println("Filtering to repos: ${repoFilter.joinToString(", ")}")
+
+            if (mergedPrs.isEmpty()) {
+                println("No merged PRs found for the given time range.")
+                githubApi.close()
+                return
+            }
+
+            val prContent = mergedPrs.joinToString("\n\n") {
+                "<pr>" +
+                    "<repo>${it.repositoryUrl.removePrefix("https://api.github.com/repos/")}</repo>" +
+                    "<title>${it.title}</title>" +
+                    "<body>${it.body.orEmpty()}</body>" +
+                    "<author>${it.user.login}</author>" +
+                    "<link>${it.htmlUrl}</link>" +
+                    "<labels>${it.labels.joinToString(", ") { l -> l.name }}</labels>" +
+                    "</pr>"
+            }
+
+            println("Got ${mergedPrs.size} merged PRs to build a QA test plan from")
+
+            val openAi = OpenAI(
+                Settings().getString(KEY_OPENAI_DEFAULT, ""),
+                logging = LoggingConfig(LogLevel.None),
+                timeout = Timeout(5.minutes, 2.minutes, 5.minutes)
+            )
+            val output = runBlocking {
+                generateQaTestPlan(openAi, prContent, since, today)
+            }
+            val outputFile = "qa_test_plan_${since}_${today}.md"
+            File(outputFile).writeText(output)
+            println("QA test plan written to $outputFile")
+            githubApi.close()
+        }
+
+        private suspend fun generateQaTestPlan(openAI: OpenAI, prContent: String, since: LocalDate, today: LocalDate): String {
+            val prompt = """
+                You are a senior QA engineer creating a daily test plan for a manual / validation QA tester.
+                You will be given a list of pull requests that were merged between $since and $today.
+                Your job is NOT to write a plan per PR — instead, read across all of the PRs and produce a single cohesive test plan organized by product area or user-facing feature that was touched.
+
+                Think of it like a daily QA briefing: "Here is what changed today, here is what you should go test, and here is what you should watch out for."
+
+                Structure the output as follows:
+
+                # QA Test Plan – $today
+
+                ## Today's Focus
+                3–5 bullet points summarizing the highest-risk or most user-visible things that changed today and should be prioritized first.
+
+                ## Areas to Test
+                Group related changes together by product area or feature (not by PR or repo). For each area:
+
+                ### [Area / Feature Name]
+                **Risk Level:** Low | Medium | High
+                **Related PRs:** comma-separated links to the PRs that touched this area
+
+                **What changed**
+                A plain-English summary of what the tester should know about this area today — what is different from yesterday, and why it matters.
+
+                **Test scenarios**
+                A numbered list of specific things to go try. Each scenario should describe:
+                - What the tester should do (actions, not implementation)
+                - What they should expect to see if everything is working correctly
+                - Any important edge cases to poke at (e.g. empty states, different account types, invalid input, mobile vs desktop)
+
+                **Regression watch**
+                A short list of nearby or related functionality that was not intentionally changed but could have been accidentally broken, and should be spot-checked.
+
+                ---
+
+                ## Needs Clarification
+                If any PRs had vague titles and no description, list them here with their links so the team knows to follow up before testing.
+
+                ---
+
+                Guidelines:
+                - Write for someone who knows the product well but is not a developer — no code or technical jargon.
+                - Do not create a separate section for every PR. Synthesize and group.
+                - Skip PRs whose titles start with "test:", "chore:", "ci:", or are dependency-only bumps — they do not need QA coverage.
+                - Fixes and features that touch the same part of the product should be combined into one area section.
+                - Keep the tone practical and direct — this is a working document the tester will have open while they work.
+            """.trimIndent()
+
+            val chatCompletionRequest = ChatCompletionRequest(
+                model = ModelId("gpt-5"),
+                messages = listOf(
+                    ChatMessage(
+                        role = ChatRole.System,
+                        content = prompt
+                    ),
+                    ChatMessage(
+                        role = ChatRole.User,
+                        content = "Here are the pull requests merged today. Generate a holistic QA test plan organized by product area, not per PR:\n\n$prContent"
                     )
                 )
             )
