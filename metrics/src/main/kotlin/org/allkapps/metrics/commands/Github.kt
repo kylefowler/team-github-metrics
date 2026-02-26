@@ -683,51 +683,45 @@ class Github : CliktCommand() {
 
         private suspend fun generateQaTestPlan(openAI: OpenAI, prContent: String, since: LocalDate, today: LocalDate): String {
             val prompt = """
-                You are a senior QA engineer creating a daily test plan for a manual / validation QA tester.
+                You are a senior QA engineer creating a concise daily test plan for a manual / validation QA tester.
                 You will be given a list of pull requests that were merged between $since and $today.
                 Your job is NOT to write a plan per PR — instead, read across all of the PRs and produce a single cohesive test plan organized by product area or user-facing feature that was touched.
 
-                Think of it like a daily QA briefing: "Here is what changed today, here is what you should go test, and here is what you should watch out for."
+                Only include areas rated Medium or High risk. Skip anything Low risk entirely — there are a lot of PRs every day and the tester needs a focused, actionable document.
 
                 Structure the output as follows:
 
                 # QA Test Plan – $today
 
                 ## Today's Focus
-                3–5 bullet points summarizing the highest-risk or most user-visible things that changed today and should be prioritized first.
+                2–4 bullet points covering only the highest-risk or most user-visible changes. Keep each bullet to one sentence.
 
                 ## Areas to Test
-                Group related changes together by product area or feature (not by PR or repo). For each area:
+                Only include Medium and High risk areas. Group related changes by product area or feature (not by PR or repo). For each area:
 
-                ### [Area / Feature Name]
-                **Risk Level:** Low | Medium | High
-                **Related PRs:** comma-separated links to the PRs that touched this area
+                ### [Area / Feature Name] — [Medium | High]
+                **Related PRs:** comma-separated links
 
-                **What changed**
-                A plain-English summary of what the tester should know about this area today — what is different from yesterday, and why it matters.
+                **What changed:** One or two sentences — what is different from yesterday and why it matters.
 
                 **Test scenarios**
-                A numbered list of specific things to go try. Each scenario should describe:
-                - What the tester should do (actions, not implementation)
-                - What they should expect to see if everything is working correctly
-                - Any important edge cases to poke at (e.g. empty states, different account types, invalid input, mobile vs desktop)
+                A tight numbered list (3–5 max) of the most important things to try. One line per scenario: what to do and what to expect. Only call out edge cases if they are genuinely risky.
 
-                **Regression watch**
-                A short list of nearby or related functionality that was not intentionally changed but could have been accidentally broken, and should be spot-checked.
+                **Watch for regressions in:** A single line listing nearby functionality to spot-check.
 
                 ---
 
                 ## Needs Clarification
-                If any PRs had vague titles and no description, list them here with their links so the team knows to follow up before testing.
+                PRs with vague titles and no description — list with links only, no explanation needed.
 
                 ---
 
                 Guidelines:
                 - Write for someone who knows the product well but is not a developer — no code or technical jargon.
                 - Do not create a separate section for every PR. Synthesize and group.
-                - Skip PRs whose titles start with "test:", "chore:", "ci:", or are dependency-only bumps — they do not need QA coverage.
-                - Fixes and features that touch the same part of the product should be combined into one area section.
-                - Keep the tone practical and direct — this is a working document the tester will have open while they work.
+                - Skip PRs whose titles start with "test:", "chore:", "ci:", or are dependency-only bumps.
+                - Skip any area you would rate as Low risk — do not include it at all.
+                - Be brief. Prefer one clear sentence over a paragraph. This document should be scannable in under 5 minutes.
             """.trimIndent()
 
             val chatCompletionRequest = ChatCompletionRequest(
