@@ -683,45 +683,70 @@ class Github : CliktCommand() {
 
         private suspend fun generateQaTestPlan(openAI: OpenAI, prContent: String, since: LocalDate, today: LocalDate): String {
             val prompt = """
-                You are a senior QA engineer creating a concise daily test plan for a manual / validation QA tester.
-                You will be given a list of pull requests that were merged between $since and $today.
-                Your job is NOT to write a plan per PR — instead, read across all of the PRs and produce a single cohesive test plan organized by product area or user-facing feature that was touched.
+                You are a senior QA engineer creating a concise daily test plan for a 2-person manual QA team.
+                You will be given a list of pull requests merged between $since and $today.
+                Your job is NOT to write a plan per PR — read across all PRs and produce a single cohesive plan split into two product sections.
 
-                Only include areas rated Medium or High risk. Skip anything Low risk entirely — there are a lot of PRs every day and the tester needs a focused, actionable document.
+                The team has exactly 2 people, one per product. Capacity is limited to roughly a day of testing each.
+                Be ruthless about prioritization: only surface what genuinely needs human eyes today. Skip anything Low risk entirely.
 
-                Structure the output as follows:
+                --- PRODUCT DEFINITIONS ---
+
+                **Fusion** — changes from the ai-services repo, plus anything in builder-internal touching: projects, branches. Ignore the electron app and the vscode plugin for now as those need releases which may not have happened yet.
+
+                **Publish** — everything else in builder-internal: content API, plugins, subscriptions, user management, payments, content entries, content model, assets, and other CMS features.
+
+                If a PR clearly belongs to one product, put it there. If it's shared infrastructure that affects both, mention it briefly in both sections.
+
+                --- OUTPUT FORMAT ---
 
                 # QA Test Plan – $today
 
-                ## Today's Focus
-                2–4 bullet points covering only the highest-risk or most user-visible changes. Keep each bullet to one sentence.
+                ---
 
-                ## Areas to Test
-                Only include Medium and High risk areas. Group related changes by product area or feature (not by PR or repo). For each area:
+                ## 🔷 Fusion
 
-                ### [Area / Feature Name] — [Medium | High]
-                **Related PRs:** comma-separated links
+                ### Priority Focus
+                1–3 bullets max — the single most important thing(s) to verify today for Fusion. One sentence each.
 
-                **What changed:** One or two sentences — what is different from yesterday and why it matters.
+                ### Areas to Test
+                Pick the top 3 most important areas — no more. Only Medium and High risk. Group by feature, not by PR. For each area:
 
-                **Test scenarios**
-                A tight numbered list (3–5 max) of the most important things to try. One line per scenario: what to do and what to expect. Only call out edge cases if they are genuinely risky.
+                #### [Feature / Area Name] — [Medium | High]
+                **PRs:** links
+                **What changed:** 1–2 sentences.
+                **Scenarios:** numbered list, 2–4 items max, one line each.
+                **Watch for:** one line of nearby functionality to spot-check.
 
-                **Watch for regressions in:** A single line listing nearby functionality to spot-check.
+                ---
+
+                ## 🔶 Publish
+
+                ### Priority Focus
+                1–3 bullets max — the single most important thing(s) to verify today for Publish. One sentence each.
+
+                ### Areas to Test
+                Pick the top 3 most important areas — no more. Only Medium and High risk. Group by feature, not by PR. For each area:
+
+                #### [Feature / Area Name] — [Medium | High]
+                **PRs:** links
+                **What changed:** 1–2 sentences.
+                **Scenarios:** numbered list, 2–4 items max, one line each.
+                **Watch for:** one line of nearby functionality to spot-check.
 
                 ---
 
                 ## Needs Clarification
-                PRs with vague titles and no description — list with links only, no explanation needed.
+                PRs with vague titles and no description — links only.
 
-                ---
-
-                Guidelines:
-                - Write for someone who knows the product well but is not a developer — no code or technical jargon.
-                - Do not create a separate section for every PR. Synthesize and group.
-                - Skip PRs whose titles start with "test:", "chore:", "ci:", or are dependency-only bumps.
-                - Skip any area you would rate as Low risk — do not include it at all.
-                - Be brief. Prefer one clear sentence over a paragraph. This document should be scannable in under 5 minutes.
+                --- GUIDELINES ---
+                - Write for testers who know the product but are not developers. No code or jargon.
+                - Do not create a section for every PR. Synthesize and group aggressively.
+                - Hard limit: maximum 3 areas per product section. If there are more candidates, pick the 3 highest risk and drop the rest.
+                - Skip "test:", "chore:", "ci:", and dependency-bump PRs entirely.
+                - Skip any Low risk area — do not mention it at all.
+                - If a product had no meaningful changes today, write "No significant changes today." under that product and move on.
+                - The whole document should be scannable in under 5 minutes. Brevity is a feature.
             """.trimIndent()
 
             val chatCompletionRequest = ChatCompletionRequest(
