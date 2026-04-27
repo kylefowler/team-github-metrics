@@ -5,6 +5,7 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
+import com.github.ajalt.clikt.parameters.options.split
 import com.github.ajalt.clikt.parameters.types.int
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.metrics.Meter
@@ -20,6 +21,10 @@ import org.allkapps.metrics.cursor.CursorApi
 import org.allkapps.metrics.cursor.UserUsageStats
 import org.allkapps.metrics.builderio.BuilderApi
 import org.allkapps.metrics.builderio.UserBuilderStats
+import org.allkapps.metrics.claude.ClaudeApi
+import org.allkapps.metrics.claude.ClaudeEnterpriseApi
+import org.allkapps.metrics.claude.ClaudeUserStats
+import org.allkapps.metrics.claude.getConsolidatedUserStats
 import java.util.concurrent.TimeUnit
 
 class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push to Grafana Alloy") {
@@ -40,6 +45,14 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
         .int()
         .default(30)
 
+    private val providers by option(
+        "--providers",
+        help = "Comma-separated list of providers to collect from. " +
+               "Available: github, cursor, builder, claude. Defaults to all."
+    ).split(",").default(listOf("github","cursor","builder","claude"))
+
+    private fun shouldCollect(provider: String) = provider in providers
+
     override fun run() {
         if (dryRun) {
             echo("=== DRY RUN MODE - No metrics will be sent to Alloy ===")
@@ -49,6 +62,8 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             }
             echo("Initializing OpenTelemetry...")
         }
+
+        echo("Active providers: ${providers.sorted().joinToString(", ")}")
 
         // 1. Setup the OTLP Exporter (HTTP or gRPC) - skip in dry-run mode
         val sdkMeterProvider = if (!dryRun) {
@@ -78,14 +93,25 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
 
         try {
             // 3. Collect metrics from different sources
-            echo("Collecting GitHub metrics...")
-            collectGithubMetrics(meter)
+            if (shouldCollect("github")) {
+                echo("Collecting GitHub metrics...")
+                collectGithubMetrics(meter)
+            }
 
-            echo("Collecting Cursor metrics...")
-            collectCursorMetrics(meter)
+            if (shouldCollect("cursor")) {
+                echo("Collecting Cursor metrics...")
+                collectCursorMetrics(meter)
+            }
 
-            echo("Collecting Builder.io Fusion metrics...")
-            collectBuilderMetrics(meter)
+            if (shouldCollect("builder")) {
+                echo("Collecting Builder.io Fusion metrics...")
+                collectBuilderMetrics(meter)
+            }
+
+            if (shouldCollect("claude")) {
+                echo("Collecting Claude usage metrics...")
+                collectClaudeMetrics(meter)
+            }
 
             echo("All metrics collected successfully.")
 
@@ -785,6 +811,240 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             }
 
         echo("Published Builder.io Fusion metrics for ${userStats.size} users")
+    }
+
+    private fun collectClaudeMetrics(meter: Meter?) {
+        val codeApi       = ClaudeApi()
+        val enterpriseApi = ClaudeEnterpriseApi()
+
+        try {
+            runBlocking {
+                val endDate   = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+                val startDate = endDate.minus(days, DateTimeUnit.DAY)
+
+                echo("Fetching Claude Code + Enterprise usage data from $startDate to $endDate...")
+
+                val userStats = getConsolidatedUserStats(
+                    startDate     = startDate,
+                    endDate       = endDate,
+                    codeApi       = codeApi,
+                    enterpriseApi = enterpriseApi
+                )
+
+                echo("Consolidated Claude usage data for ${userStats.size} users")
+
+                if (dryRun) {
+                    printClaudeStats(userStats)
+                } else {
+                    publishClaudeMetrics(meter!!, userStats)
+                }
+            }
+        } catch (e: Exception) {
+            echo("Error collecting Claude metrics: ${e.message}")
+            e.printStackTrace()
+        } finally {
+            codeApi.close()
+            enterpriseApi.close()
+        }
+    }
+
+    private fun publishClaudeMetrics(meter: Meter, userStats: List<ClaudeUserStats>) {
+        meter.gaugeBuilder("engmetrics_claude_active_days")
+            .setDescription("Number of days the user was active in Claude Code")
+            .setUnit("d")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.activeDays.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_sessions")
+            .setDescription("Total Claude Code sessions by user")
+            .setUnit("{session}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.sessions.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_lines_added")
+            .setDescription("Total lines of code added via Claude Code by user")
+            .setUnit("{line}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.linesAdded.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_lines_removed")
+            .setDescription("Total lines of code removed via Claude Code by user")
+            .setUnit("{line}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.linesRemoved.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_commits")
+            .setDescription("Total commits made via Claude Code by user")
+            .setUnit("{commit}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.commits.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_pull_requests")
+            .setDescription("Total pull requests created via Claude Code by user")
+            .setUnit("{pr}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.pullRequests.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_tool_accepted")
+            .setDescription("Total tool actions accepted by user in Claude Code")
+            .setUnit("{action}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.toolAccepted.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_tool_rejected")
+            .setDescription("Total tool actions rejected by user in Claude Code")
+            .setUnit("{action}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.toolRejected.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_input_tokens")
+            .setDescription("Total input tokens used by user in Claude Code")
+            .setUnit("{token}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.inputTokens.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_output_tokens")
+            .setDescription("Total output tokens used by user in Claude Code")
+            .setUnit("{token}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.outputTokens.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_total_tokens")
+            .setDescription("Total tokens (input + output + cache) used by user in Claude Code")
+            .setUnit("{token}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.totalTokens.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_estimated_cost_usd")
+            .setDescription("Estimated cost in USD for Claude Code usage by user")
+            .setUnit("USD")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.estimatedCostUsd,
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_chat_conversations")
+            .setDescription("Distinct Claude.ai conversations by user")
+            .setUnit("{conversation}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.chatConversations.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_chat_messages")
+            .setDescription("Total Claude.ai messages sent by user")
+            .setUnit("{message}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.chatMessages.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_chat_projects_used")
+            .setDescription("Distinct Claude.ai projects used by user")
+            .setUnit("{project}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.chatProjectsUsed.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_chat_artifacts_created")
+            .setDescription("Distinct artifacts created in Claude.ai by user")
+            .setUnit("{artifact}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.chatArtifactsCreated.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_web_searches")
+            .setDescription("Total web search invocations by user (chat + code)")
+            .setUnit("{search}")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.webSearchCount.toDouble(),
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        echo("Published Claude metrics for ${userStats.size} users")
+    }
+
+    private fun printClaudeStats(userStats: List<ClaudeUserStats>) {
+        echo("\n=== Claude Usage Metrics (Dry Run) ===")
+        userStats.forEach { stat ->
+            echo("\nUser: ${stat.email}")
+            echo("  Active Days:          ${stat.activeDays}")
+            echo("  Sessions (Code):      ${stat.sessions}")
+            echo("  Lines Added:          ${stat.linesAdded}")
+            echo("  Lines Removed:        ${stat.linesRemoved}")
+            echo("  Commits:              ${stat.commits}")
+            echo("  Pull Requests:        ${stat.pullRequests}")
+            echo("  Tool Accepted:        ${stat.toolAccepted}")
+            echo("  Tool Rejected:        ${stat.toolRejected}")
+            echo("  Input Tokens:         ${stat.inputTokens}")
+            echo("  Output Tokens:        ${stat.outputTokens}")
+            echo("  Total Tokens:         ${stat.totalTokens}")
+            echo("  Est. Cost (USD):      ${"%.4f".format(stat.estimatedCostUsd)}")
+            echo("  Chat Conversations:   ${stat.chatConversations}")
+            echo("  Chat Messages:        ${stat.chatMessages}")
+            echo("  Chat Projects Used:   ${stat.chatProjectsUsed}")
+            echo("  Artifacts Created:    ${stat.chatArtifactsCreated}")
+            echo("  Thinking Messages:    ${stat.chatThinkingMessages}")
+            echo("  Web Searches:         ${stat.webSearchCount}")
+        }
     }
 
     private fun printGithubStats(userPrs: List<UserPrs>) {

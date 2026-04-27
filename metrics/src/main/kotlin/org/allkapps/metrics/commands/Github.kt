@@ -38,6 +38,8 @@ const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 const val KEY_OPENAI_DEFAULT: String = "openai_api_key_default"
 const val KEY_CURSOR_API: String = "cursor_api_key"
 const val KEY_BUILDER_API: String = "builder_private_key"
+const val KEY_CLAUDE_API: String = "claude_api_key"
+const val KEY_CLAUDE_ENTERPRISE_API: String = "claude_enterprise_api_key"
 
 class Github : CliktCommand() {
     override fun run() {
