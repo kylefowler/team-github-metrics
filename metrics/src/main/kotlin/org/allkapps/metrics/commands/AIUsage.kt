@@ -19,6 +19,7 @@ import kotlinx.datetime.*
 import org.allkapps.metrics.github.GitHubApi
 import org.allkapps.metrics.cursor.CursorApi
 import org.allkapps.metrics.cursor.UserUsageStats
+import org.allkapps.metrics.cursor.UserSpendStats
 import org.allkapps.metrics.builderio.BuilderApi
 import org.allkapps.metrics.builderio.UserBuilderStats
 import org.allkapps.metrics.claude.ClaudeApi
@@ -512,6 +513,35 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
                     // Publish OpenTelemetry metrics
                     publishCursorMetrics(meter!!, userStats)
                 }
+
+                // --- Spend (current billing cycle) ---
+                val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+                echo("Fetching Cursor billing-cycle spend...")
+
+                val spendResponse = cursorApi.getTeamSpend()
+
+                echo("Received spend data for ${spendResponse.teamMemberSpend.size} users")
+
+                val spendStats = spendResponse.teamMemberSpend.map { userSpend ->
+                    UserSpendStats(
+                        userId = userSpend.userId,
+                        name = userSpend.name,
+                        email = userSpend.email,
+                        role = userSpend.role,
+                        spendCents = userSpend.spendCents,
+                        overallSpendCents = userSpend.overallSpendCents,
+                        fastPremiumRequests = userSpend.fastPremiumRequests,
+                        hardLimitOverrideDollars = userSpend.hardLimitOverrideDollars,
+                        monthlyLimitDollars = userSpend.monthlyLimitDollars,
+                        subscriptionCycleStart = spendResponse.subscriptionCycleStart
+                    )
+                }.sortedByDescending { it.overallSpendCents }
+
+                if (dryRun) {
+                    printCursorSpendStats(spendStats)
+                } else {
+                    publishCursorSpendMetrics(meter!!, spendStats)
+                }
             }
         } catch (e: Exception) {
             echo("Error collecting Cursor metrics: ${e.message}")
@@ -598,6 +628,56 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             }
 
         echo("Published Cursor metrics for ${userStats.size} users")
+    }
+
+    private fun publishCursorSpendMetrics(meter: Meter, spendStats: List<UserSpendStats>) {
+        meter.gaugeBuilder("engmetrics_cursor_spend_overall_usd")
+            .setDescription("Total billing-cycle spend in USD per user in Cursor (including included usage)")
+            .setUnit("USD")
+            .buildWithCallback { result ->
+                spendStats.forEach { stat ->
+                    result.record(
+                        stat.overallSpendUsd,
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("name", stat.name)
+                            .build()
+                    )
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_cursor_spend_on_demand_usd")
+            .setDescription("On-demand billing-cycle spend in USD per user in Cursor (excludes included usage)")
+            .setUnit("USD")
+            .buildWithCallback { result ->
+                spendStats.forEach { stat ->
+                    result.record(
+                        stat.spendUsd,
+                        Attributes.builder()
+                            .put("user", stat.email)
+                            .put("name", stat.name)
+                            .build()
+                    )
+                }
+            }
+
+        echo("Published Cursor spend metrics for ${spendStats.size} users")
+    }
+
+    private fun printCursorSpendStats(spendStats: List<UserSpendStats>) {
+        echo("\n=== Cursor Billing-Cycle Spend (Dry Run) ===")
+        spendStats.forEach { stat ->
+            echo("\nUser: ${stat.email} (${stat.name}, ${stat.role})")
+            echo("  Overall Spend:           $${"%.2f".format(stat.overallSpendUsd)}")
+            echo("  On-Demand Spend:         $${"%.2f".format(stat.spendUsd)}")
+            echo("  Fast Premium Requests:   ${stat.fastPremiumRequests}")
+            if (stat.hardLimitOverrideDollars > 0) {
+                echo("  Hard Limit Override:     \$${stat.hardLimitOverrideDollars}")
+            }
+            if (stat.monthlyLimitDollars != null) {
+                echo("  Monthly Limit:           \$${stat.monthlyLimitDollars}")
+            }
+        }
     }
 
     // Implement Builder.io Fusion metrics collection

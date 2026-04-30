@@ -122,7 +122,57 @@ class CursorApi {
             ))
         }.body<DailyUsageResponse>()
     }
+
+    /**
+     * Fetch spend data for the current billing cycle, paginating through all pages.
+     */
+    suspend fun getTeamSpend(): TeamSpendResponse {
+        val allMembers = mutableListOf<UserSpendData>()
+        var page = 1
+        var meta: TeamSpendResponse
+
+        do {
+            meta = client.post("/teams/spend") {
+                setBody(TeamSpendRequest(page = page, pageSize = 100))
+            }.body<TeamSpendResponse>()
+
+            allMembers.addAll(meta.teamMemberSpend)
+            page++
+        } while (page <= meta.totalPages)
+
+        return meta.copy(teamMemberSpend = allMembers)
+    }
 }
+
+@Serializable
+data class TeamSpendRequest(
+    val searchTerm: String? = null,
+    val sortBy: String = "amount",
+    val sortDirection: String = "desc",
+    val page: Int = 1,
+    val pageSize: Int = 100
+)
+
+@Serializable
+data class UserSpendData(
+    val userId: String,
+    val name: String,
+    val email: String,
+    val role: String,
+    val spendCents: Int = 0,
+    val overallSpendCents: Int = 0,
+    val fastPremiumRequests: Int = 0,
+    val hardLimitOverrideDollars: Int = 0,
+    val monthlyLimitDollars: Int? = null
+)
+
+@Serializable
+data class TeamSpendResponse(
+    val teamMemberSpend: List<UserSpendData>,
+    val subscriptionCycleStart: Long? = null,
+    val totalMembers: Int = 0,
+    val totalPages: Int = 1
+)
 
 /**
  * Aggregated usage data for a single user across multiple days
@@ -156,3 +206,24 @@ data class UserUsageStats(
     val latestClientVersion: String
 )
 
+/**
+ * Month-to-date spend data for a single user (current billing cycle)
+ */
+data class UserSpendStats(
+    val userId: String,
+    val name: String,
+    val email: String,
+    val role: String,
+    /** On-demand spend in cents (excludes included usage) */
+    val spendCents: Int,
+    /** Total spend in cents (including included usage) */
+    val overallSpendCents: Int,
+    val fastPremiumRequests: Int,
+    /** Custom hard spending limit override in dollars (0 = no override) */
+    val hardLimitOverrideDollars: Int,
+    val monthlyLimitDollars: Int?,
+    val subscriptionCycleStart: Long?
+) {
+    val spendUsd: Double get() = spendCents / 100.0
+    val overallSpendUsd: Double get() = overallSpendCents / 100.0
+}
