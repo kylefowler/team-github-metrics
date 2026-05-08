@@ -1040,11 +1040,21 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             }
 
         meter.gaugeBuilder("engmetrics_claude_estimated_cost_usd")
-            .setDescription("Estimated cost in USD for Claude Code usage by user")
+            .setDescription("Estimated cost in USD for Claude usage by user across all products (discounted)")
             .setUnit("USD")
             .buildWithCallback { result ->
                 userStats.forEach { stat ->
                     result.record(stat.estimatedCostUsd,
+                        Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
+                }
+            }
+
+        meter.gaugeBuilder("engmetrics_claude_list_cost_usd")
+            .setDescription("List-price cost in USD for Claude usage by user across all products (pre-discount)")
+            .setUnit("USD")
+            .buildWithCallback { result ->
+                userStats.forEach { stat ->
+                    result.record(stat.listCostUsd,
                         Attributes.builder().put("user", stat.email).put("days", days.toString()).build())
                 }
             }
@@ -1118,6 +1128,7 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             echo("  Output Tokens:        ${stat.outputTokens}")
             echo("  Total Tokens:         ${stat.totalTokens}")
             echo("  Est. Cost (USD):      ${"%.4f".format(stat.estimatedCostUsd)}")
+            echo("  List Cost (USD):      ${"%.4f".format(stat.listCostUsd)}")
             echo("  Chat Conversations:   ${stat.chatConversations}")
             echo("  Chat Messages:        ${stat.chatMessages}")
             echo("  Chat Projects Used:   ${stat.chatProjectsUsed}")

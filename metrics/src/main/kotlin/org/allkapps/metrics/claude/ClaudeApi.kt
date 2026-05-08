@@ -107,6 +107,95 @@ data class EnterpriseUser(
     @SerialName("email_address") val emailAddress: String = ""
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Enterprise Cost & Usage Report endpoints (beta)
+// Endpoints: GET /v1/organizations/analytics/user_usage_report
+//            GET /v1/organizations/analytics/user_cost_report
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Actor object returned by the cost/usage report endpoints. */
+@Serializable
+data class EnterpriseAnalyticsActor(
+    val type: String = "",
+    @SerialName("user_id") val userId: String = "",
+    val name: String? = null,
+    val email: String? = null,
+    val deleted: Boolean = false
+)
+
+/** Prompt-cache creation breakdown (usage report). */
+@Serializable
+data class EnterpriseCacheCreationTokens(
+    @SerialName("ephemeral_5m_input_tokens") val ephemeral5mInputTokens: Long = 0,
+    @SerialName("ephemeral_1h_input_tokens") val ephemeral1hInputTokens: Long = 0
+)
+
+/** Server-tool usage (usage report). */
+@Serializable
+data class EnterpriseServerToolUse(
+    @SerialName("web_search_requests") val webSearchRequests: Int = 0
+)
+
+/** One row from user_usage_report. */
+@Serializable
+data class UserUsageReportEntry(
+    val actor: EnterpriseAnalyticsActor = EnterpriseAnalyticsActor(),
+    val product: String? = null,
+    val model: String? = null,
+    @SerialName("context_window") val contextWindow: String? = null,
+    @SerialName("inference_geo") val inferenceGeo: String? = null,
+    val speed: String? = null,
+    @SerialName("uncached_input_tokens") val uncachedInputTokens: Long = 0,
+    @SerialName("cache_creation") val cacheCreation: EnterpriseCacheCreationTokens = EnterpriseCacheCreationTokens(),
+    @SerialName("cache_read_input_tokens") val cacheReadInputTokens: Long = 0,
+    @SerialName("output_tokens") val outputTokens: Long = 0,
+    @SerialName("total_tokens") val totalTokens: Long = 0,
+    @SerialName("server_tool_use") val serverToolUse: EnterpriseServerToolUse = EnterpriseServerToolUse(),
+    val requests: Int = 0
+)
+
+@Serializable
+data class UserUsageReportResponse(
+    @SerialName("organization_id") val organizationId: String = "",
+    val data: List<UserUsageReportEntry> = emptyList(),
+    @SerialName("has_more") val hasMore: Boolean = false,
+    @SerialName("next_page") val nextPage: String? = null,
+    @SerialName("data_refreshed_at") val dataRefreshedAt: String? = null
+)
+
+/** One row from user_cost_report. */
+@Serializable
+data class UserCostReportEntry(
+    val actor: EnterpriseAnalyticsActor = EnterpriseAnalyticsActor(),
+    val product: String? = null,
+    val model: String? = null,
+    @SerialName("context_window") val contextWindow: String? = null,
+    @SerialName("inference_geo") val inferenceGeo: String? = null,
+    val speed: String? = null,
+    val currency: String = "USD",
+    /** Fractional cents string, e.g. "41280.000000" = $412.80 */
+    val amount: String = "0",
+    /** List-price (pre-discount) fractional cents string. */
+    @SerialName("list_amount") val listAmount: String = "0",
+    @SerialName("cost_type") val costType: String? = null,
+    @SerialName("token_type") val tokenType: String? = null,
+    val requests: Int = 0
+) {
+    /** Parsed [amount] converted to USD dollars. */
+    val amountUsd: Double get() = amount.toDoubleOrNull()?.div(100.0) ?: 0.0
+    /** Parsed [listAmount] converted to USD dollars. */
+    val listAmountUsd: Double get() = listAmount.toDoubleOrNull()?.div(100.0) ?: 0.0
+}
+
+@Serializable
+data class UserCostReportResponse(
+    @SerialName("organization_id") val organizationId: String = "",
+    val data: List<UserCostReportEntry> = emptyList(),
+    @SerialName("has_more") val hasMore: Boolean = false,
+    @SerialName("next_page") val nextPage: String? = null,
+    @SerialName("data_refreshed_at") val dataRefreshedAt: String? = null
+)
+
 @Serializable
 data class EnterpriseChatMetrics(
     @SerialName("distinct_conversation_count") val distinctConversationCount: Int = 0,
@@ -169,7 +258,7 @@ data class EnterpriseUsersResponse(
 
 data class ClaudeUserStats(
     val email: String,
-    // ── Claude Code API (token/cost data only from this source) ──────────────
+    // ── Claude Code API — behavioral metrics ────────────────────────────────
     val activeDays: Int,
     val sessions: Int,
     val linesAdded: Long,
@@ -178,12 +267,18 @@ data class ClaudeUserStats(
     val pullRequests: Int,
     val toolAccepted: Int,
     val toolRejected: Int,
+    // ── Enterprise user_usage_report — tokens across all products ────────────
+    /** Uncached input tokens across all Claude products. */
     val inputTokens: Long,
     val outputTokens: Long,
     val cacheReadTokens: Long,
     val cacheCreationTokens: Long,
     val totalTokens: Long,
+    // ── Enterprise user_cost_report — cost across all products ───────────────
+    /** Discounted USD cost across all Claude products (from user_cost_report). */
     val estimatedCostUsd: Double,
+    /** List-price USD cost across all Claude products (pre-discount). */
+    val listCostUsd: Double,
     // ── Enterprise Analytics API (chat / claude.ai metrics) ──────────────────
     val chatConversations: Int,
     val chatMessages: Int,
@@ -304,6 +399,67 @@ class ClaudeEnterpriseApi {
         }
         return all
     }
+
+    /**
+     * Fetches all rows from the beta [user_usage_report] endpoint for the given date range.
+     * The range is split into at-most-31-day windows automatically.
+     * Returns token usage data across all products per user.
+     */
+    suspend fun getUserUsageReport(startDate: LocalDate, endDate: LocalDate): List<UserUsageReportEntry> {
+        val all = mutableListOf<UserUsageReportEntry>()
+        // API limit: a single query may span at most 31 days
+        var windowStart = startDate
+        while (windowStart < endDate) {
+            val windowEnd = minOf(endDate, windowStart.plus(31, DateTimeUnit.DAY))
+            var nextPage: String? = null
+            var hasMore = true
+            while (hasMore) {
+                val httpResponse = client.get("/v1/organizations/analytics/user_usage_report") {
+                    parameter("starting_at", "${windowStart}T00:00:00Z")
+                    parameter("ending_at", "${windowEnd}T00:00:00Z")
+                    parameter("limit", 1000)
+                    if (nextPage != null) parameter("page", nextPage)
+                }
+                if (!httpResponse.status.isSuccess()) break
+                val response = httpResponse.body<UserUsageReportResponse>()
+                all.addAll(response.data)
+                hasMore = response.hasMore
+                nextPage = response.nextPage
+            }
+            windowStart = windowEnd
+        }
+        return all
+    }
+
+    /**
+     * Fetches all rows from the beta [user_cost_report] endpoint for the given date range.
+     * The range is split into at-most-31-day windows automatically.
+     * Returns USD cost data across all products per user.
+     */
+    suspend fun getUserCostReport(startDate: LocalDate, endDate: LocalDate): List<UserCostReportEntry> {
+        val all = mutableListOf<UserCostReportEntry>()
+        var windowStart = startDate
+        while (windowStart < endDate) {
+            val windowEnd = minOf(endDate, windowStart.plus(31, DateTimeUnit.DAY))
+            var nextPage: String? = null
+            var hasMore = true
+            while (hasMore) {
+                val httpResponse = client.get("/v1/organizations/analytics/user_cost_report") {
+                    parameter("starting_at", "${windowStart}T00:00:00Z")
+                    parameter("ending_at", "${windowEnd}T00:00:00Z")
+                    parameter("limit", 1000)
+                    if (nextPage != null) parameter("page", nextPage)
+                }
+                if (!httpResponse.status.isSuccess()) break
+                val response = httpResponse.body<UserCostReportResponse>()
+                all.addAll(response.data)
+                hasMore = response.hasMore
+                nextPage = response.nextPage
+            }
+            windowStart = windowEnd
+        }
+        return all
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,13 +467,19 @@ class ClaudeEnterpriseApi {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fetches data from both the Claude Code API and the Enterprise Analytics API
- * for the window [startDate, endDate) and returns consolidated per-user stats.
+ * Fetches data from the Claude Code API, the Enterprise Analytics API,
+ * and the new Enterprise cost/usage report endpoints for the window
+ * [startDate, endDate) and returns consolidated per-user stats.
  *
- * Token / cost data comes exclusively from the Code API (it's not in Enterprise).
- * Chat metrics come exclusively from the Enterprise API.
- * Code metrics (sessions, lines, commits, PRs, tools) prefer the Code API when
- * available, falling back to the Enterprise API for users not present there.
+ * - Behavioral metrics (sessions, LOC, commits, PRs, tools): Claude Code API
+ *   with Enterprise analytics as fallback.
+ * - Token usage: Enterprise user_usage_report (all products).
+ *   Falls back to Code API model_breakdown when the new endpoint returns nothing.
+ * - Cost: Enterprise user_cost_report (all products).
+ *   Falls back to Code API estimated_cost when the new endpoint returns nothing.
+ * - Chat metrics: Enterprise Analytics users endpoint.
+ * - Web searches: Enterprise user_usage_report server_tool_use (primary) + legacy
+ *   enterprise users endpoint.
  */
 suspend fun getConsolidatedUserStats(
     startDate: LocalDate,
@@ -345,21 +507,75 @@ suspend fun getConsolidatedUserStats(
         if (email.isNotBlank()) enterpriseByEmail.getOrPut(email) { mutableListOf() }.add(entry)
     }
 
-    // ── Merge on email ────────────────────────────────────────────────────────
-    val allEmails = codeByEmail.keys + enterpriseByEmail.keys
+    // ── Enterprise user_usage_report: group by email ──────────────────────────
+    val usageReportByEmail = mutableMapOf<String, MutableList<UserUsageReportEntry>>()
+    enterpriseApi.getUserUsageReport(startDate, endDate).forEach { entry ->
+        val email = entry.actor.email
+        if (!email.isNullOrBlank()) usageReportByEmail.getOrPut(email) { mutableListOf() }.add(entry)
+    }
 
-    return allEmails.distinct().map { email ->
+    // ── Enterprise user_cost_report: group by email ───────────────────────────
+    val costReportByEmail = mutableMapOf<String, MutableList<UserCostReportEntry>>()
+    enterpriseApi.getUserCostReport(startDate, endDate).forEach { entry ->
+        val email = entry.actor.email
+        if (!email.isNullOrBlank()) costReportByEmail.getOrPut(email) { mutableListOf() }.add(entry)
+    }
+
+    // ── Merge on email ────────────────────────────────────────────────────────
+    val allEmails = (codeByEmail.keys + enterpriseByEmail.keys +
+                     usageReportByEmail.keys + costReportByEmail.keys).distinct()
+
+    return allEmails.map { email ->
         val codeEntries       = codeByEmail[email] ?: emptyList()
         val enterpriseEntries = enterpriseByEmail[email] ?: emptyList()
+        val usageEntries      = usageReportByEmail[email] ?: emptyList()
+        val costEntries       = costReportByEmail[email] ?: emptyList()
 
-        val inputTokens   = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.input } }
-        val outputTokens  = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.output } }
-        val cacheRead     = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.cacheRead } }
-        val cacheCreation = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.cacheCreation } }
+        // Token data — prefer enterprise user_usage_report (all products),
+        // fall back to Code API model_breakdown for backward compatibility.
+        val inputTokens: Long
+        val outputTokens: Long
+        val cacheReadTokens: Long
+        val cacheCreationTokens: Long
+        val totalTokens: Long
+        if (usageEntries.isNotEmpty()) {
+            inputTokens         = usageEntries.sumOf { it.uncachedInputTokens }
+            outputTokens        = usageEntries.sumOf { it.outputTokens }
+            cacheReadTokens     = usageEntries.sumOf { it.cacheReadInputTokens }
+            cacheCreationTokens = usageEntries.sumOf {
+                it.cacheCreation.ephemeral5mInputTokens + it.cacheCreation.ephemeral1hInputTokens
+            }
+            totalTokens         = usageEntries.sumOf { it.totalTokens }
+        } else {
+            inputTokens         = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.input } }
+            outputTokens        = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.output } }
+            cacheReadTokens     = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.cacheRead } }
+            cacheCreationTokens = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.cacheCreation } }
+            totalTokens         = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
+        }
+
+        // Cost — prefer enterprise user_cost_report (all products),
+        // fall back to Code API estimated_cost.
+        val estimatedCostUsd: Double
+        val listCostUsd: Double
+        if (costEntries.isNotEmpty()) {
+            estimatedCostUsd = costEntries.sumOf { it.amountUsd }
+            listCostUsd      = costEntries.sumOf { it.listAmountUsd }
+        } else {
+            estimatedCostUsd = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.estimatedCost.amount } }
+            listCostUsd      = estimatedCostUsd   // no list-price data from Code API
+        }
+
+        // Web searches — prefer user_usage_report server_tool_use (covers all products),
+        // fall back to legacy enterprise per-day count.
+        val webSearchCount = if (usageEntries.isNotEmpty())
+            usageEntries.sumOf { it.serverToolUse.webSearchRequests }
+        else
+            enterpriseEntries.sumOf { it.webSearchCount }
 
         ClaudeUserStats(
             email               = email,
-            // Code API metrics (use enterprise fallback for session/line/commit if code API has nothing)
+            // Behavioral — Code API (enterprise analytics fallback)
             activeDays          = codeEntries.size.takeIf { it > 0 } ?: enterpriseEntries.size,
             sessions            = codeEntries.sumOf { it.coreMetrics.numSessions }
                                     .takeIf { it > 0 }
@@ -394,20 +610,21 @@ suspend fun getConsolidatedUserStats(
                                     e.claudeCodeMetrics.toolActions.multiEditTool.rejected +
                                     e.claudeCodeMetrics.toolActions.writeTool.rejected +
                                     e.claudeCodeMetrics.toolActions.notebookEditTool.rejected },
-            // Token / cost — Code API only
+            // Token / cost — enterprise reports (Code API fallback)
             inputTokens         = inputTokens,
             outputTokens        = outputTokens,
-            cacheReadTokens     = cacheRead,
-            cacheCreationTokens = cacheCreation,
-            totalTokens         = inputTokens + outputTokens + cacheRead + cacheCreation,
-            estimatedCostUsd    = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.estimatedCost.amount } },
-            // Chat / claude.ai — Enterprise API only
+            cacheReadTokens     = cacheReadTokens,
+            cacheCreationTokens = cacheCreationTokens,
+            totalTokens         = totalTokens,
+            estimatedCostUsd    = estimatedCostUsd,
+            listCostUsd         = listCostUsd,
+            // Chat / claude.ai — Enterprise users API
             chatConversations   = enterpriseEntries.sumOf { it.chatMetrics.distinctConversationCount },
             chatMessages        = enterpriseEntries.sumOf { it.chatMetrics.messageCount },
             chatProjectsUsed    = enterpriseEntries.sumOf { it.chatMetrics.distinctProjectsUsedCount },
             chatArtifactsCreated = enterpriseEntries.sumOf { it.chatMetrics.distinctArtifactsCreatedCount },
             chatThinkingMessages = enterpriseEntries.sumOf { it.chatMetrics.thinkingMessageCount },
-            webSearchCount      = enterpriseEntries.sumOf { it.webSearchCount }
+            webSearchCount      = webSearchCount
         )
     }.sortedByDescending { it.sessions + it.chatMessages }
 }
