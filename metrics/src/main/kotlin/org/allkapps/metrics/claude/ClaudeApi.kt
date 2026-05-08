@@ -562,7 +562,7 @@ suspend fun getConsolidatedUserStats(
             estimatedCostUsd = costEntries.sumOf { it.amountUsd }
             listCostUsd      = costEntries.sumOf { it.listAmountUsd }
         } else {
-            estimatedCostUsd = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.estimatedCost.amount } }
+            estimatedCostUsd = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.estimatedCost.amount / 100.0 } }
             listCostUsd      = estimatedCostUsd   // no list-price data from Code API
         }
 
