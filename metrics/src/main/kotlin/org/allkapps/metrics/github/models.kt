@@ -48,7 +48,6 @@ data class GitHubIssue(
     val body: String? = null,
     val reactions: Reactions,
     @SerialName("timeline_url") val timelineUrl: String,
-    @SerialName("performed_via_github_app") val performedViaGithubApp: String? = null,
     @SerialName("state_reason") val stateReason: String? = null,
     val score: Double,
     val moreDetails: GraphQLPullRequestNode? = null

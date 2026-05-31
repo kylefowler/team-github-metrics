@@ -256,6 +256,19 @@ data class EnterpriseUsersResponse(
 // Consolidated per-user stats (both sources merged)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Token and cost breakdown for a single model, aggregated across all products. */
+data class ClaudeModelStats(
+    val model: String,
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val cacheReadTokens: Long = 0,
+    val cacheCreationTokens: Long = 0,
+    val totalTokens: Long = 0,
+    val requests: Int = 0,
+    val estimatedCostUsd: Double = 0.0,
+    val listCostUsd: Double = 0.0
+)
+
 data class ClaudeUserStats(
     val email: String,
     // ── Claude Code API — behavioral metrics ────────────────────────────────
@@ -285,7 +298,9 @@ data class ClaudeUserStats(
     val chatProjectsUsed: Int,
     val chatArtifactsCreated: Int,
     val chatThinkingMessages: Int,
-    val webSearchCount: Int
+    val webSearchCount: Int,
+    /** Per-model token and cost breakdown (sorted by total tokens desc). */
+    val modelBreakdown: List<ClaudeModelStats> = emptyList()
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -417,6 +432,7 @@ class ClaudeEnterpriseApi {
                 val httpResponse = client.get("/v1/organizations/analytics/user_usage_report") {
                     parameter("starting_at", "${windowStart}T00:00:00Z")
                     parameter("ending_at", "${windowEnd}T00:00:00Z")
+                    parameter("group_by[]", "model")
                     parameter("limit", 1000)
                     if (nextPage != null) parameter("page", nextPage)
                 }
@@ -447,6 +463,7 @@ class ClaudeEnterpriseApi {
                 val httpResponse = client.get("/v1/organizations/analytics/user_cost_report") {
                     parameter("starting_at", "${windowStart}T00:00:00Z")
                     parameter("ending_at", "${windowEnd}T00:00:00Z")
+                    parameter("group_by[]", "model")
                     parameter("limit", 1000)
                     if (nextPage != null) parameter("page", nextPage)
                 }
@@ -538,6 +555,7 @@ suspend fun getConsolidatedUserStats(
         val cacheReadTokens: Long
         val cacheCreationTokens: Long
         val totalTokens: Long
+        val modelBreakdown: List<ClaudeModelStats>
         if (usageEntries.isNotEmpty()) {
             inputTokens         = usageEntries.sumOf { it.uncachedInputTokens }
             outputTokens        = usageEntries.sumOf { it.outputTokens }
@@ -546,12 +564,56 @@ suspend fun getConsolidatedUserStats(
                 it.cacheCreation.ephemeral5mInputTokens + it.cacheCreation.ephemeral1hInputTokens
             }
             totalTokens         = usageEntries.sumOf { it.totalTokens }
+
+            // Build per-model breakdown by joining token + cost entries on model name
+            val tokensByModel = usageEntries.groupBy { it.model ?: "unknown" }
+            val costsByModel   = costEntries.groupBy  { it.model ?: "unknown" }
+            val allModels = (tokensByModel.keys + costsByModel.keys).distinct()
+            modelBreakdown = allModels.map { model ->
+                val te = tokensByModel[model] ?: emptyList()
+                val ce = costsByModel[model]  ?: emptyList()
+                ClaudeModelStats(
+                    model               = model,
+                    inputTokens         = te.sumOf { it.uncachedInputTokens },
+                    outputTokens        = te.sumOf { it.outputTokens },
+                    cacheReadTokens     = te.sumOf { it.cacheReadInputTokens },
+                    cacheCreationTokens = te.sumOf {
+                        it.cacheCreation.ephemeral5mInputTokens + it.cacheCreation.ephemeral1hInputTokens
+                    },
+                    totalTokens         = te.sumOf { it.totalTokens },
+                    requests            = te.sumOf { it.requests },
+                    estimatedCostUsd    = ce.sumOf { it.amountUsd },
+                    listCostUsd         = ce.sumOf { it.listAmountUsd }
+                )
+            }.sortedByDescending { it.totalTokens }
         } else {
             inputTokens         = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.input } }
             outputTokens        = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.output } }
             cacheReadTokens     = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.cacheRead } }
             cacheCreationTokens = codeEntries.sumOf { e -> e.modelBreakdown.sumOf { it.tokens.cacheCreation } }
             totalTokens         = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
+
+            // Fall back to Code API model_breakdown
+            modelBreakdown = codeEntries.flatMap { it.modelBreakdown }
+                .groupBy { it.model }
+                .map { (model, entries) ->
+                    val mInput      = entries.sumOf { it.tokens.input }
+                    val mOutput     = entries.sumOf { it.tokens.output }
+                    val mCacheRead  = entries.sumOf { it.tokens.cacheRead }
+                    val mCacheCreate = entries.sumOf { it.tokens.cacheCreation }
+                    val mCost       = entries.sumOf { it.estimatedCost.amount / 100.0 }
+                    ClaudeModelStats(
+                        model               = model,
+                        inputTokens         = mInput,
+                        outputTokens        = mOutput,
+                        cacheReadTokens     = mCacheRead,
+                        cacheCreationTokens = mCacheCreate,
+                        totalTokens         = mInput + mOutput + mCacheRead + mCacheCreate,
+                        requests            = 0,
+                        estimatedCostUsd    = mCost,
+                        listCostUsd         = mCost
+                    )
+                }.sortedByDescending { it.totalTokens }
         }
 
         // Cost — prefer enterprise user_cost_report (all products),
@@ -624,7 +686,8 @@ suspend fun getConsolidatedUserStats(
             chatProjectsUsed    = enterpriseEntries.sumOf { it.chatMetrics.distinctProjectsUsedCount },
             chatArtifactsCreated = enterpriseEntries.sumOf { it.chatMetrics.distinctArtifactsCreatedCount },
             chatThinkingMessages = enterpriseEntries.sumOf { it.chatMetrics.thinkingMessageCount },
-            webSearchCount      = webSearchCount
+            webSearchCount      = webSearchCount,
+            modelBreakdown      = modelBreakdown
         )
     }.sortedByDescending { it.sessions + it.chatMessages }
 }

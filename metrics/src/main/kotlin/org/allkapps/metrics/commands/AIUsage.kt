@@ -1135,7 +1135,35 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             echo("  Artifacts Created:    ${stat.chatArtifactsCreated}")
             echo("  Thinking Messages:    ${stat.chatThinkingMessages}")
             echo("  Web Searches:         ${stat.webSearchCount}")
+            if (stat.modelBreakdown.isNotEmpty()) {
+                echo("  Model Breakdown:")
+                stat.modelBreakdown.forEach { m ->
+                    echo("    %-45s  tokens: %,d  (in: %,d  out: %,d  cache_r: %,d  cache_w: %,d)  cost: \$%s".format(
+                        m.model,
+                        m.totalTokens,
+                        m.inputTokens,
+                        m.outputTokens,
+                        m.cacheReadTokens,
+                        m.cacheCreationTokens,
+                        "%.4f".format(m.estimatedCostUsd)
+                    ))
+                }
+            }
         }
+//
+//        // CSV model breakdown
+//        val allRows = userStats.flatMap { stat -> stat.modelBreakdown.map { stat.email to it } }
+//        if (allRows.isNotEmpty()) {
+//            echo("\n=== Claude Model Breakdown CSV ===")
+//            echo("user,model_name,tokens_in,tokens_out,tokens_cache_r,tokens_cache_w,cost_usd")
+//            allRows.forEach { (email, m) ->
+//                echo("${email.csvQuote()},${m.model.csvQuote()},${m.inputTokens},${m.outputTokens},${m.cacheReadTokens},${m.cacheCreationTokens},${"%.4f".format(m.estimatedCostUsd)}")
+//            }
+//        }
+    }
+
+    private fun String.csvQuote(): String {
+        return if (contains(',') || contains('"') || contains('\n')) "\"${replace("\"", "\"\"")}\"" else this
     }
 
     private fun printGithubStats(userPrs: List<UserPrs>) {
