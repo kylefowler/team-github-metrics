@@ -8,7 +8,7 @@ settings = "1.1.1"
 logback = "1.4.14"
 datetime = "0.4.0"
 picnic = "0.7.0"
-openai = "4.0.1"
+openai = "4.1.0"
 
 [libraries]
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }

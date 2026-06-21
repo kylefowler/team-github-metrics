@@ -517,6 +517,9 @@ class Github : CliktCommand() {
         val persona by option().choice("marketing", "engineering").default("marketing")
             .help("The persona to write the changelog for, marketing will be more high level, engineering more detailed")
 
+        private val maxPrBodyChars = 8_000
+        private val maxChunkChars = 2_200_000
+
         override fun run() {
             val today = if (startDate != null) {
                 LocalDate.parse(startDate!!)
@@ -551,21 +554,22 @@ class Github : CliktCommand() {
                 allResults
             }
 
-            val changelogContent = mergedPrs.joinToString("\n\n") {
-                "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${it.body}</body><link>${it.htmlUrl}</link></pr>"
+            val changelogEntries = mergedPrs.map {
+                val trimmedBody = it.body.orEmpty().take(maxPrBodyChars)
+                "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${trimmedBody}</body><link>${it.htmlUrl}</link></pr>"
             }
 
             println("Got ${mergedPrs.size} merged PRs to consider for changelog")
 
             val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None), timeout = Timeout(5.minutes, 2.minutes, 5.minutes))
             val output = runBlocking {
-                chat(openAi, changelogContent)
+                chat(openAi, changelogEntries)
             }
             File("changelog_${since}_${today}.md").writeText(output)
             githubApi.close()
         }
 
-        suspend fun chat(openAI: OpenAI, changelogContent: String): String {
+        suspend fun chat(openAI: OpenAI, changelogEntries: List<String>): String {
             val prompt = if (persona == "marketing") {
                 "You are a product marketing manager trying to create a public facing changelog from engineering pull request titles and descriptions. This needs to be something that customers will understand but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags, how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR. The items should summarize for a customer what has changed and what they can expect. Dont go into too many details about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. When generating summaries, if possible include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input. Ignore ones with 'test:' or 'chore:' in the title"
             } else {
@@ -578,17 +582,44 @@ class Github : CliktCommand() {
                     Ignore ones with 'test:' or 'chore:' in the title
                 """.trimIndent()
             }
-            println(prompt)
+
+            val chunks = changelogEntries.chunkByMaxChars(maxChunkChars)
+            val partials = chunks.mapIndexed { index, chunk ->
+                val chunkPrompt = """
+                    This is chunk ${index + 1} of ${chunks.size}. Summarize only this chunk in markdown.
+                    Preserve PR links and group by repo.
+
+                    ${chunk.joinToString("\n\n")}
+                """.trimIndent()
+                streamCompletion(openAI, prompt, chunkPrompt)
+            }
+
+            if (partials.size == 1) {
+                return partials.first()
+            }
+
+            val synthesisPrompt = """
+                Merge the chunk summaries into one final changelog.
+                Deduplicate overlapping themes and keep PR links.
+                Group output by repo and keep it concise.
+
+                ${partials.joinToString("\n\n")}
+            """.trimIndent()
+
+            return streamCompletion(openAI, prompt, synthesisPrompt)
+        }
+
+        private suspend fun streamCompletion(openAI: OpenAI, systemPrompt: String, userPrompt: String): String {
             val chatCompletionRequest = ChatCompletionRequest(
-                model = ModelId("gpt-5"),
+                model = ModelId("gpt-5.5"),
                 messages = listOf(
                     ChatMessage(
                         role = ChatRole.System,
-                        content = prompt
+                        content = systemPrompt
                     ),
                     ChatMessage(
                         role = ChatRole.User,
-                        content = "Turn the following prs into a public changelog: \n $changelogContent”"
+                        content = userPrompt
                     )
                 )
             )
@@ -600,6 +631,31 @@ class Github : CliktCommand() {
                 .onCompletion { result.append("\n") }
                 .collect()
             return result.toString()
+        }
+
+        private fun List<String>.chunkByMaxChars(maxChars: Int): List<List<String>> {
+            if (this.isEmpty()) return emptyList()
+
+            val chunks = mutableListOf<MutableList<String>>()
+            var current = mutableListOf<String>()
+            var currentChars = 0
+
+            for (entry in this) {
+                val entryChars = entry.length + 2
+                if (current.isNotEmpty() && currentChars + entryChars > maxChars) {
+                    chunks += current
+                    current = mutableListOf()
+                    currentChars = 0
+                }
+                current += entry
+                currentChars += entryChars
+            }
+
+            if (current.isNotEmpty()) {
+                chunks += current
+            }
+
+            return chunks
         }
     }
 
