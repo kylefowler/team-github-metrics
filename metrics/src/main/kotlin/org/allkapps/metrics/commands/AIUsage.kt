@@ -1,6 +1,7 @@
 package org.allkapps.metrics.commands
 
 import com.github.ajalt.clikt.core.CliktCommand
+import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
@@ -92,6 +93,7 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
 
         val meter: Meter? = sdkMeterProvider?.get("engineering.metrics")
 
+        var failed = false
         try {
             // 3. Collect metrics from different sources
             if (shouldCollect("github")) {
@@ -119,6 +121,8 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
         } catch (e: Exception) {
             echo("Error collecting metrics: ${e.message}")
             e.printStackTrace()
+            // Fail the run (after the finally block flushes) so CI doesn't report a broken collection as success.
+            failed = true
         } finally {
             // 4. Force Flush / Shutdown - skip in dry-run mode
             if (!dryRun && sdkMeterProvider != null) {
@@ -127,6 +131,7 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             }
             echo("Done.")
         }
+        if (failed) throw ProgramResult(1)
     }
 
     private fun collectGithubMetrics(meter: Meter?) {
@@ -169,7 +174,8 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
                 filterForOrg = true,
                 fullDetails = true,
                 fetchReviewsInDetail = true,
-                fetchCommentsInDetail = true
+                fetchCommentsInDetail = true,
+                includeBodies = false
             )
         }
 
@@ -188,7 +194,8 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
                 filterForOrg = true,
                 fullDetails = true,
                 fetchReviewsInDetail = true,
-                fetchCommentsInDetail = true
+                fetchCommentsInDetail = true,
+                includeBodies = false
             )
 
             // Merge PRs by user, deduplicating PRs

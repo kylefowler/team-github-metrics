@@ -159,38 +159,27 @@ class Github : CliktCommand() {
                 filterForOrg: Boolean = true,
                 fullDetails: Boolean = false,
                 fetchReviewsInDetail: Boolean = false,
-                fetchCommentsInDetail: Boolean = false
+                fetchCommentsInDetail: Boolean = false,
+                includeBodies: Boolean = true
             ): List<UserPrs> {
-                var page = 1
-                val perPage = 50
-                var hasNextPage = true
-                val allResults = mutableListOf<GitHubIssue>()
-
-                val startDate = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
-
-                while (hasNextPage) {
-                    val prResponse = githubApi.searchPRs(
-                        org,
-                        team = team,
-                        author = author,
-                        page = page,
-                        perPage = perPage,
-                        startDate = startDate.date.minus(days, DateTimeUnit.DAY)
-                    )
-                    val linkHeader = prResponse.headers[HttpHeaders.Link]
-                    hasNextPage = linkHeader?.contains("rel=\"next\"") == true
-
-                    allResults.addAll(prResponse.body<GithubIssueSearch>().items)
-                    page++
-                }
+                val today = Clock.System.now().toLocalDateTime(TimeZone.UTC).date
+                val startDate = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+                    .minus(days, DateTimeUnit.DAY)
+                val allResults = githubApi.searchAllPRs(
+                    org,
+                    team = team,
+                    author = author,
+                    startDate = startDate,
+                    endDate = maxOf(today, startDate)
+                )
                 val allPRs = if (filterForOrg && org != null) {
                     allResults.filter { pr -> pr.url.lowercase().contains(org.lowercase()) }
                 } else {
                     allResults
                 }
                 val detailUpdate = if (fullDetails) {
-                    val prDetails = allPRs.chunked(25).flatMap { chunk ->
-                        githubApi.prDetails(chunk, fetchReviewsInDetail, fetchCommentsInDetail).flatMap { req ->
+                    val prDetails = allPRs.chunked(10).flatMap { chunk ->
+                        githubApi.prDetails(chunk, fetchReviewsInDetail, fetchCommentsInDetail, includeBodies).flatMap { req ->
                             req.data.values.flatMap { repo -> repo.values }
                         }
                     }.associateBy { pr -> pr.url }
