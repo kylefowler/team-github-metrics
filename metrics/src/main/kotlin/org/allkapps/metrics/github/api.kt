@@ -196,18 +196,20 @@ class GitHubApi {
         author: String? = null,
         startDate: LocalDate,
         endDate: LocalDate,
-        perPage: Int = 100
+        perPage: Int = 100,
+        mergedOnly: Boolean = false,
+        repo: String? = null
     ): List<GitHubIssue> {
         val results = LinkedHashMap<String, GitHubIssue>()
         var expected = 0
 
         suspend fun fetchPage(start: LocalDate, end: LocalDate, page: Int): GithubIssueSearch {
-            var result = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage)
+            var result = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage, mergedOnly = mergedOnly, repo = repo)
                 .body<GithubIssueSearch>()
             var attempts = 1
             while (result.incompleteResults && attempts < 3) {
                 delay(5_000L * attempts)
-                result = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage)
+                result = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage, mergedOnly = mergedOnly, repo = repo)
                     .body<GithubIssueSearch>()
                 attempts++
             }

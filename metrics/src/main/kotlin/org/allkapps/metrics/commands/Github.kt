@@ -34,6 +34,14 @@ import org.allkapps.metrics.github.*
 import java.io.File
 import kotlin.time.Duration.Companion.minutes
 
+@Serializable
+data class ChangelogProduct(
+    val name: String,
+    val audience: String,
+    val description: String,
+    val repos: List<String>
+)
+
 const val KEY_GITHUB_DEFAULT: String = "github_access_key_default"
 const val KEY_OPENAI_DEFAULT: String = "openai_api_key_default"
 const val KEY_CURSOR_API: String = "cursor_api_key"
@@ -506,6 +514,11 @@ class Github : CliktCommand() {
         val persona by option().choice("marketing", "engineering").default("marketing")
             .help("The persona to write the changelog for, marketing will be more high level, engineering more detailed")
 
+        val model by option("--model", envvar = "CHANGELOG_MODEL", help = "OpenAI model used to write the changelog")
+            .default("gpt-6.1-sol")
+
+        val glossaryPath by option("--glossary", help = "JSON file mapping repos to the products, audiences and plain-language descriptions readers know them by")
+
         private val maxPrBodyChars = 8_000
         private val maxChunkChars = 2_200_000
 
@@ -519,64 +532,99 @@ class Github : CliktCommand() {
             val githubApi = GitHubApi()
 
             val mergedPrs = runBlocking {
-                var page = 1
-                val perPage = 50
-                var hasNextPage = true
-                val allResults = mutableListOf<GitHubIssue>()
+                githubApi.searchAllPRs(
+                    org,
+                    startDate = since,
+                    endDate = if (startDate != null) today else Clock.System.now().toLocalDateTime(TimeZone.UTC).date,
+                    mergedOnly = true,
+                    repo = repo
+                )
+            }
 
-                while (hasNextPage) {
-                    val prResponse = githubApi.searchPRs(
-                        org,
-                        startDate = since,
-                        mergedOnly = true,
-                        endDate = if (startDate != null) today else null,
-                        repo = repo,
-                        page = page,
-                        perPage = perPage
-                    )
-                    val linkHeader = prResponse.headers[HttpHeaders.Link]
-                    hasNextPage = linkHeader?.contains("rel=\"next\"") == true
+            val products = glossaryPath?.let { loadGlossary(File(it)) }.orEmpty()
+            val productsByRepo = products.flatMap { p -> p.repos.map { it.lowercase() to p } }.toMap()
+            val unmappedRepos = mutableSetOf<String>()
 
-                    allResults.addAll(prResponse.body<GithubIssueSearch>().items)
-                    page++
+            // Group by product (not repo) so everything a reader knows as one product reads together.
+            val changelogEntries = mergedPrs
+                .map { pr -> pr to repoName(pr.repositoryUrl) }
+                .map { (pr, name) ->
+                    val product = productsByRepo[name.lowercase()]
+                    if (product == null) unmappedRepos += name
+                    Triple(pr, name, product?.name ?: if (products.isEmpty()) name else "Other ($name)")
                 }
-                allResults
-            }
+                .sortedBy { it.third }
+                .map { (pr, _, productName) ->
+                    val trimmedBody = pr.body.orEmpty().take(maxPrBodyChars)
+                    "<pr><product>$productName</product><title>${pr.title}</title><body>${trimmedBody}</body><link>${pr.htmlUrl}</link></pr>"
+                }
 
-            val changelogEntries = mergedPrs.map {
-                val trimmedBody = it.body.orEmpty().take(maxPrBodyChars)
-                "<pr><repo>${it.repositoryUrl}</repo><title>${it.title}</title><body>${trimmedBody}</body><link>${it.htmlUrl}</link></pr>"
+            if (products.isNotEmpty() && unmappedRepos.isNotEmpty()) {
+                System.err.println("WARNING: no glossary entry for repos: ${unmappedRepos.sorted().joinToString(", ")} (add them to the glossary file)")
             }
-
+            val activeProducts = products.filter { p -> p.repos.any { r -> mergedPrs.any { repoName(it.repositoryUrl).equals(r, ignoreCase = true) } } }
             println("Got ${mergedPrs.size} merged PRs to consider for changelog")
 
             val openAi = OpenAI(Settings().getString(KEY_OPENAI_DEFAULT, ""), logging = LoggingConfig(LogLevel.None), timeout = Timeout(5.minutes, 2.minutes, 5.minutes))
             val output = runBlocking {
-                chat(openAi, changelogEntries)
+                chat(openAi, changelogEntries, activeProducts)
             }
             File("changelog_${since}_${today}.md").writeText(output)
             githubApi.close()
         }
 
-        suspend fun chat(openAI: OpenAI, changelogEntries: List<String>): String {
+        // "https://api.github.com/repos/BuilderIO/ai-services" -> "BuilderIO/ai-services"
+        private fun repoName(repositoryUrl: String): String =
+            repositoryUrl.removePrefix("https://api.github.com/repos/")
+
+        private fun loadGlossary(file: File): List<ChangelogProduct> =
+            Json { ignoreUnknownKeys = true }.decodeFromString<List<ChangelogProduct>>(file.readText())
+
+        private fun glossarySection(products: List<ChangelogProduct>): String {
+            if (products.isEmpty()) return ""
+            val entries = products.joinToString("\n") { "- ${it.name} (${it.audience}): ${it.description}" }
+            return """
+
+                Each <pr> has a <product> tag. These are the products and systems readers know, and what each one is. Use these exact names as section headings and never mention repository names:
+                $entries
+            """.trimIndent()
+        }
+
+        suspend fun chat(openAI: OpenAI, changelogEntries: List<String>, products: List<ChangelogProduct>): String {
             val prompt = if (persona == "marketing") {
-                "You are a product marketing manager trying to create a public facing changelog from engineering pull request titles and descriptions. This needs to be something that customers will understand but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags, how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR. The items should summarize for a customer what has changed and what they can expect. Dont go into too many details about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. When generating summaries, if possible include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input. Ignore ones with 'test:' or 'chore:' in the title"
+                "You are a product marketing manager trying to create a public facing changelog from engineering pull request titles and descriptions. This needs to be something that customers will understand but they wont have intimate knowledge of the details. You need to decide from the list of PR details, each surrounded with <pr></pr> tags, how to best summarize the all of the PRs per repo in a changelog format. You should not necessarily have one line per PR. The items should summarize for a customer what has changed and what they can expect. Dont go into too many details about PRs that are labelled as fixes and where possible combine those together more generally in a fixes line. When generating summaries, if possible include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input. Ignore ones with 'test:' or 'chore:' in the title" + glossarySection(products)
             } else {
                 """
-                    You are an engineering manager tasked with creating an internal facing changelog from engineering pull request titles and descriptions for non-engineering team consumption. 
-                    It is important that this changelog is detailed so that readers can understand the new features that were added, and the fixes that were being made. Call outs of customer impact and things done for a specific customer are very important to include. You will get details about each PR in a structured format, 
-                    each surrounded with <pr></pr> tags. In order to create the changelog you need to summarize the details of the PRs per repo in a changelog format. If a PR doesnt have a body, just use the title. If there is not enough information to go on, ignore the PR for summarization but include the link to that PR
-                     at the end with others that were ignored. You should not necessarily have one line per PR. The items should summarize for the team what has changed in terms of functionality, bug fixes, improvements for customers and what others can expect.
-                    When generating summaries, if include links to all of the PRs that went into generating that summary, the link to the PR is in the <link> tag for each PR in the input. 
-                    Ignore ones with 'test:' or 'chore:' in the title
-                """.trimIndent()
+                    You write the weekly changelog for Builder.io employees who are not engineers: sales, support, customer success, marketing and leadership.
+                    They know our products by the names customers see. They do not know repository names, code, or technical terms, and they read this to answer
+                    "what changed, who does it affect, and what can I tell a customer?"
+
+                    You get details about each PR in a structured format, each surrounded with <pr></pr> tags. Summarize them into a changelog with this structure:
+                    - One `##` section per product, using the exact product name from the <product> tag. Put customer-facing products first, then internal tools and systems.
+                    - Under each product, group items under these headings when they apply: `### New`, `### Improved`, `### Fixed`. Skip empty headings.
+                    - Each item starts with a short bold headline in plain words (e.g. `**Disconnect Jira and Slack from the app**`), followed by one or two plain sentences. Lead with what a person can now do or what problem went away,
+                      then say who it affects (all customers, a specific customer, a plan, or an internal team). Name a specific customer whenever the PR mentions one and say what changed for them.
+
+                    Writing rules:
+                    - Never use repository names, package names, file names, function, flag or environment variable names, ticket IDs, or PR numbers in the text of an item.
+                    - Write for a salesperson. Do not use these terms unexplained: MCP, OAuth, API, endpoint, CLI, SDK, token, webhook, cache, latency, feature flag, container, Kubernetes, refactor, schema, migration, regression, model routing.
+                      Say what it does for people instead ("sign in with Google", "the command-line tool developers use", "a setting that turns the feature on for some customers"), or name the product it belongs to.
+                    - Describe the outcome, not the implementation. "Pages load faster for returning visitors" beats "cached the manifest lookup".
+                    - Relevance test: if you cannot say why a customer, a seller or a support person would care in one plain sentence, do not give it its own item. Visual cleanups, internal code reorganization, icon or styling systems,
+                      test tooling and AI model plumbing go into the single `Behind the scenes` line for that product, e.g. "Routine maintenance and under-the-hood improvements (6 changes)" with the PR links.
+                    - Combine small fixes within a product into one `Fixes and polish` item that gives two or three plain examples.
+                    - Skip changes with no visible effect (refactors, dependency bumps, CI, tests, tooling) other than that one `Behind the scenes` line. Ignore PRs with 'test:' or 'chore:' in the title.
+                    - If a PR has no body, use the title. If there is not enough information to describe it, list its link at the end under `## Not summarized`.
+                    - End each item with its source PRs as `PRs: [link text](url)`, using the link in each <pr>'s <link> tag.
+                    - You should not necessarily have one item per PR. Keep each product section short enough to skim.
+                """.trimIndent() + glossarySection(products)
             }
 
             val chunks = changelogEntries.chunkByMaxChars(maxChunkChars)
             val partials = chunks.mapIndexed { index, chunk ->
                 val chunkPrompt = """
                     This is chunk ${index + 1} of ${chunks.size}. Summarize only this chunk in markdown.
-                    Preserve PR links and group by repo.
+                    Preserve PR links and group by product.
 
                     ${chunk.joinToString("\n\n")}
                 """.trimIndent()
@@ -590,7 +638,7 @@ class Github : CliktCommand() {
             val synthesisPrompt = """
                 Merge the chunk summaries into one final changelog.
                 Deduplicate overlapping themes and keep PR links.
-                Group output by repo and keep it concise.
+                Group output by product, keep the same section structure, and keep it concise and in plain language.
 
                 ${partials.joinToString("\n\n")}
             """.trimIndent()
@@ -600,7 +648,7 @@ class Github : CliktCommand() {
 
         private suspend fun streamCompletion(openAI: OpenAI, systemPrompt: String, userPrompt: String): String {
             val chatCompletionRequest = ChatCompletionRequest(
-                model = ModelId("gpt-5.5"),
+                model = ModelId(model),
                 messages = listOf(
                     ChatMessage(
                         role = ChatRole.System,
