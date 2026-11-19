@@ -204,16 +204,30 @@ class GitHubApi {
         var expected = 0
 
         suspend fun fetchPage(start: LocalDate, end: LocalDate, page: Int): GithubIssueSearch {
-            var result = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage, mergedOnly = mergedOnly, repo = repo)
-                .body<GithubIssueSearch>()
-            var attempts = 1
-            while (result.incompleteResults && attempts < 3) {
-                delay(5_000L * attempts)
-                result = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage, mergedOnly = mergedOnly, repo = repo)
-                    .body<GithubIssueSearch>()
-                attempts++
+            var incompleteAttempts = 0
+            var rateLimitAttempts = 0
+            while (true) {
+                val response = searchPRs(org, team = team, author = author, startDate = start, endDate = end, page = page, perPage = perPage, mergedOnly = mergedOnly, repo = repo)
+                // Error bodies would otherwise deserialize into an empty result and silently drop the page.
+                if (!response.status.isSuccess()) {
+                    val body = response.bodyAsText()
+                    val rateLimited = (response.status == HttpStatusCode.Forbidden || response.status == HttpStatusCode.TooManyRequests) &&
+                        (response.headers["x-ratelimit-remaining"] == "0" || body.contains("rate limit", ignoreCase = true))
+                    if (rateLimited && rateLimitAttempts < 5) {
+                        rateLimitAttempts++
+                        delay(rateLimitWaitMillis(response))
+                        continue
+                    }
+                    error("PR search failed for ${team ?: author ?: org} ($start..$end page $page): ${response.status} $body")
+                }
+                val result = response.body<GithubIssueSearch>()
+                if (response.headers["x-ratelimit-remaining"] == "0") {
+                    delay(rateLimitWaitMillis(response))
+                }
+                if (!result.incompleteResults || incompleteAttempts >= 2) return result
+                incompleteAttempts++
+                delay(5_000L * incompleteAttempts)
             }
-            return result
         }
 
         suspend fun searchRange(start: LocalDate, end: LocalDate) {
@@ -241,6 +255,12 @@ class GitHubApi {
             "PR search returned ${results.size} of $expected results for ${team ?: author ?: org} ($startDate..$endDate)"
         }
         return results.values.toList()
+    }
+
+    private fun rateLimitWaitMillis(response: HttpResponse): Long {
+        response.headers["Retry-After"]?.toLongOrNull()?.let { return it * 1000 }
+        val reset = response.headers["x-ratelimit-reset"]?.toLongOrNull() ?: return 60_000
+        return ((reset * 1000 - System.currentTimeMillis()) + 1_000).coerceIn(1_000, 120_000)
     }
 
     private val teamMembersCache = mutableMapOf<String, List<User>>()
