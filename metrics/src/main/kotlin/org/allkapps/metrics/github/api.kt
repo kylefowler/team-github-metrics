@@ -94,15 +94,6 @@ class GitHubApi {
     @Serializable
     data class GraphQLResponse<T>(val data: T)
 
-    suspend inline fun <reified T> graphql(query: String): GraphQLResponse<T> {
-        return client.post("/graphql") {
-            headers {
-                append("Content-Type", "application/json")
-            }
-            setBody(GraphQLRequest(query))
-        }.body<GraphQLResponse<T>>()
-    }
-
     private fun parseRepoUrlRegex(url: String): Pair<String, String> {
         val parts = url.removePrefix("https://api.github.com/").split("/")
         return Pair(parts[1], parts[2])
@@ -118,17 +109,51 @@ class GitHubApi {
         includeBodies: Boolean = true
     ): List<GraphQLResponse<Map<String, Map<String, GraphQLPullRequestNode>>>> = coroutineScope {
 
-        val repos = prs.groupBy { it.repositoryUrl }.mapValues { (k, v) ->
-            v.mapIndexed { index, gitHubIssue ->
-                "pullRequest${index + 1}: pullRequest(number: ${gitHubIssue.number}) { number additions deletions changedFiles totalCommentsCount title author { login } url ${if (includeComments) comments(includeBodies) else ""} ${if (includeComments) reviewThreads else ""} ${if (includeReviews) reviews(includeBodies) else ""} }"
-            }.joinToString("\n")
+        prs.groupBy { it.repositoryUrl }.map { (repoUrl, repoPrs) ->
+            val (org, repoName) = parseRepoUrlRegex(repoUrl)
+            async { graphqlPermits.withPermit { fetchRepoPrDetails(org, repoName, repoPrs, includeReviews, includeComments, includeBodies) } }
+        }.awaitAll().flatten()
+    }
+
+    private suspend fun fetchRepoPrDetails(
+        org: String,
+        repoName: String,
+        prs: List<GitHubIssue>,
+        includeReviews: Boolean,
+        includeComments: Boolean,
+        includeBodies: Boolean
+    ): List<GraphQLResponse<Map<String, Map<String, GraphQLPullRequestNode>>>> {
+        val prQueries = prs.mapIndexed { index, pr ->
+            "pullRequest${index + 1}: pullRequest(number: ${pr.number}) { number additions deletions changedFiles totalCommentsCount title author { login } url ${if (includeComments) comments(includeBodies) else ""} ${if (includeComments) reviewThreads else ""} ${if (includeReviews) reviews(includeBodies) else ""} }"
+        }.joinToString("\n")
+        val query = "query { repo1: repository(owner:\"$org\", name: \"$repoName\") { \n $prQueries \n} }"
+
+        var rateLimitAttempts = 0
+        while (true) {
+            val response = client.post("/graphql") {
+                contentType(ContentType.Application.Json)
+                setBody(GraphQLRequest(query))
+            }
+            if (response.status.isSuccess()) {
+                if (response.headers["x-ratelimit-remaining"] == "0") delay(rateLimitWaitMillis(response))
+                return listOf(response.body())
+            }
+            val body = response.bodyAsText()
+            val rateLimited = (response.status == HttpStatusCode.Forbidden || response.status == HttpStatusCode.TooManyRequests) &&
+                (response.headers["x-ratelimit-remaining"] == "0" || body.contains("rate limit", ignoreCase = true))
+            if (rateLimited && rateLimitAttempts < 5) {
+                rateLimitAttempts++
+                delay(rateLimitWaitMillis(response))
+                continue
+            }
+            // GitHub's GraphQL API returns 502 when a query is too expensive to finish in time, so retry in smaller pieces.
+            if (response.status.value in 500..599 && prs.size > 1) {
+                val half = prs.size / 2
+                return fetchRepoPrDetails(org, repoName, prs.take(half), includeReviews, includeComments, includeBodies) +
+                    fetchRepoPrDetails(org, repoName, prs.drop(half), includeReviews, includeComments, includeBodies)
+            }
+            error("PR details request failed for $org/$repoName PRs ${prs.map { it.number }}: ${response.status} ${body.take(500)}")
         }
-        val fullQuery = repos.entries.mapIndexed { index, entry ->
-            val (org, repoName) = parseRepoUrlRegex(entry.key)
-            val repoQuery = "repo${index + 1}: repository(owner:\"$org\", name: \"$repoName\") { \n ${entry.value} \n}"
-            async { graphqlPermits.withPermit { graphql<Map<String, Map<String, GraphQLPullRequestNode>>>("query { $repoQuery }") } }
-        }
-        fullQuery.awaitAll()
     }
 
     suspend fun searchPRs(
