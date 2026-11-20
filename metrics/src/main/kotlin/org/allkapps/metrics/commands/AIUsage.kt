@@ -1077,7 +1077,7 @@ class CollectMetrics : CliktCommand(help = "Collect engineering metrics and push
             }
 
         meter.gaugeBuilder("engmetrics_claude_chat_messages")
-            .setDescription("Total Claude.ai messages sent by user")
+            .setDescription("Total Claude.ai messages sent by user (chat, Chat and Cowork unified, Cowork, Claude Design)")
             .setUnit("{message}")
             .buildWithCallback { result ->
                 userStats.forEach { stat ->

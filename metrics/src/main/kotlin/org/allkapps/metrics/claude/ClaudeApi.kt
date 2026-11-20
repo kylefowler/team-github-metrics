@@ -237,10 +237,34 @@ data class EnterpriseClaudeCodeMetrics(
     @SerialName("tool_actions") val toolActions: EnterpriseCodeToolActions = EnterpriseCodeToolActions()
 )
 
+// Fields here are nullable because the API documents them as possibly null.
+@Serializable
+data class EnterpriseUnifiedChatMetrics(
+    @SerialName("distinct_conversation_count") val distinctConversationCount: Int? = null,
+    @SerialName("message_count") val messageCount: Int? = null,
+    @SerialName("distinct_projects_used_count") val distinctProjectsUsedCount: Int? = null,
+    @SerialName("distinct_artifacts_created_count") val distinctArtifactsCreatedCount: Int? = null,
+    @SerialName("thinking_message_count") val thinkingMessageCount: Int? = null
+)
+
+@Serializable
+data class EnterpriseSessionMessageMetrics(
+    @SerialName("message_count") val messageCount: Int? = null
+)
+
+@Serializable
+data class EnterpriseChatCoworkUnifiedMetrics(
+    val chat: EnterpriseUnifiedChatMetrics? = null,
+    val sessions: EnterpriseSessionMessageMetrics? = null
+)
+
 @Serializable
 data class EnterpriseUserEntry(
     val user: EnterpriseUser = EnterpriseUser(),
     @SerialName("chat_metrics") val chatMetrics: EnterpriseChatMetrics = EnterpriseChatMetrics(),
+    @SerialName("chat_cowork_unified_metrics") val chatCoworkUnifiedMetrics: EnterpriseChatCoworkUnifiedMetrics? = null,
+    @SerialName("cowork_metrics") val coworkMetrics: EnterpriseSessionMessageMetrics? = null,
+    @SerialName("design_metrics") val designMetrics: EnterpriseSessionMessageMetrics? = null,
     @SerialName("claude_code_metrics") val claudeCodeMetrics: EnterpriseClaudeCodeMetrics = EnterpriseClaudeCodeMetrics(),
     @SerialName("web_search_count") val webSearchCount: Int = 0
 )
@@ -681,14 +705,27 @@ suspend fun getConsolidatedUserStats(
             estimatedCostUsd    = estimatedCostUsd,
             listCostUsd         = listCostUsd,
             // Chat / claude.ai — Enterprise users API
-            chatConversations   = enterpriseEntries.sumOf { it.chatMetrics.distinctConversationCount },
-            chatMessages        = enterpriseEntries.sumOf { it.chatMetrics.messageCount },
-            chatProjectsUsed    = enterpriseEntries.sumOf { it.chatMetrics.distinctProjectsUsedCount },
-            chatArtifactsCreated = enterpriseEntries.sumOf { it.chatMetrics.distinctArtifactsCreatedCount },
-            chatThinkingMessages = enterpriseEntries.sumOf { it.chatMetrics.thinkingMessageCount },
+            // Users with Chat and Cowork unified on report chat under chat_cowork_unified_metrics instead of chat_metrics.
+            chatConversations   = enterpriseEntries.sumOf {
+                                    it.chatMetrics.distinctConversationCount +
+                                    (it.chatCoworkUnifiedMetrics?.chat?.distinctConversationCount ?: 0) },
+            chatMessages        = enterpriseEntries.sumOf {
+                                    it.chatMetrics.messageCount +
+                                    (it.chatCoworkUnifiedMetrics?.chat?.messageCount ?: 0) +
+                                    (it.chatCoworkUnifiedMetrics?.sessions?.messageCount ?: 0) +
+                                    (it.coworkMetrics?.messageCount ?: 0) +
+                                    (it.designMetrics?.messageCount ?: 0) },
+            chatProjectsUsed    = enterpriseEntries.sumOf {
+                                    it.chatMetrics.distinctProjectsUsedCount +
+                                    (it.chatCoworkUnifiedMetrics?.chat?.distinctProjectsUsedCount ?: 0) },
+            chatArtifactsCreated = enterpriseEntries.sumOf {
+                                    it.chatMetrics.distinctArtifactsCreatedCount +
+                                    (it.chatCoworkUnifiedMetrics?.chat?.distinctArtifactsCreatedCount ?: 0) },
+            chatThinkingMessages = enterpriseEntries.sumOf {
+                                    it.chatMetrics.thinkingMessageCount +
+                                    (it.chatCoworkUnifiedMetrics?.chat?.thinkingMessageCount ?: 0) },
             webSearchCount      = webSearchCount,
             modelBreakdown      = modelBreakdown
         )
     }.sortedByDescending { it.sessions + it.chatMessages }
 }
-
